@@ -1,0 +1,870 @@
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+
+local LocalPlayer = Players.LocalPlayer
+
+local Settings = {
+Enabled = true,
+AutoHarvest = false,
+HarvestDelay = 1,
+NotifyEnabled = true,
+FixLag = false,
+MaxDistance = 85,
+BypassHold = true,
+AutoRetry = 3,
+WalkSpeed = 16,
+CustomSpeedEnabled = false,
+Language = "VIE"
+}
+
+local State = {
+IsIdle = true,
+LightningHits = 0,
+IsProcessing = false
+}
+
+local Theme = {
+Background = Color3.fromRGB(20, 24, 28),
+Sidebar = Color3.fromRGB(15, 18, 22),
+Card = Color3.fromRGB(28, 33, 38),
+Text = Color3.fromRGB(240, 240, 240),
+SubText = Color3.fromRGB(150, 160, 170),
+ToggleOff = Color3.fromRGB(45, 50, 58),
+ToggleOn = Color3.fromRGB(0, 150, 255),
+DARK2 = Color3.fromRGB(22, 20, 27),
+WHITE = Color3.fromRGB(255, 255, 255)
+}
+
+local Locales = {
+VIE = {
+StatusIdle = "⏱ Trạng thái: Đang theo dõi tín hiệu...",
+StatusDisabled = "⏱ Trạng thái: Đã tắt theo dõi",
+StatusHits = "⏱ Tín hiệu %d/3 (Cần đủ 3 tín hiệu)...",
+StatusHarvest = "🚨 Phát hiện %d tín hiệu - Đang nhặt!",
+StatusArrived = "⚠️ SÉT ĐÃ ĐẾN!",
+StatusWaiting = "⏳ Chờ %ss trước khi thu hoạch...",
+NavRadar = "⚡ Main",
+NavOpt = "🚀 Tối Ưu Hóa",
+NavPlayer = "👤 LocalPlayer",
+SecRadarTitle = "⚡ Hệ Thống Main & Thu Hoạch",
+SecRadarSub = "Chỉ nhặt khi có đủ từ 3 tín hiệu trở lên.",
+SecOptTitle = "💡 Tối Ưu Game",
+SecOptSub = "Xóa hiệu ứng thừa để tránh giật lag.",
+SecPlayerTitle = "⚙️ Tùy Chỉnh Nhân Vật",
+SecPlayerSub = "Chỉnh tốc độ di chuyển và server hop.",
+ToggleRadar = "Bật Ra-đa",
+ToggleAuto = "Auto Harvest",
+HarvestDelayLabel = "Harvest Delay (giây)",
+HarvestDelayPlace = "Nhập số giây...",
+ToggleNotify = "Thông báo",
+ToggleBypass = "Bypass Hold",
+ToggleFixLag = "Xóa Hiệu Ứng Thừa",
+WalkSpeedLabel = "WalkSpeed",
+WalkSpeedPlace = "Nhập tốc độ...",
+HopBtn = "🌐 Hop Server 1 Người",
+NotifDelay = "⏱ Đặt Delay Harvest: %ss",
+NotifSpeed = "⚡ Đặt tốc độ: %s",
+NotifSuccess = "⚡ THU HOẠCH THÀNH CÔNG!",
+NotifProcessed = "⚡ Sét sắp đánh các cây của bạn trong 1-2 giây hãy thu hoạch ngay!",
+NotifHopSearch = "🌐 Đang tìm server 1 người...",
+NotifHopping = "🚀 Đang chuyển server...",
+NotifNoServer = "❌ Không tìm thấy server phù hợp!",
+NotifFailServer = "❌ Lỗi lấy danh sách server!"
+},
+ENG = {
+StatusIdle = "⏱ Status: Monitoring for signals...",
+StatusDisabled = "⏱ Status: Monitoring disabled",
+StatusHits = "⏱ Signal %d/3 (3 signals required)...",
+StatusHarvest = "🚨 Detected %d signals - Harvesting!",
+StatusArrived = "⚠️ LIGHTNING HAS ARRIVED!",
+StatusWaiting = "⏳ Waiting %ss before harvest...",
+NavRadar = "⚡ Main",
+NavOpt = "🚀 Optimize",
+NavPlayer = "👤 LocalPlayer",
+SecRadarTitle = "⚡ Main & Harvest System",
+SecRadarSub = "Only harvest when 3+ signals are detected.",
+SecOptTitle = "💡 Game Optimization",
+SecOptSub = "Remove excess effects to reduce lag.",
+SecPlayerTitle = "⚙️ Character Settings",
+SecPlayerSub = "Adjust movement speed and server hop.",
+ToggleRadar = "Enable Radar",
+ToggleAuto = "Auto Harvest",
+HarvestDelayLabel = "Harvest Delay (s)",
+HarvestDelayPlace = "Enter seconds...",
+ToggleNotify = "Notification",
+ToggleBypass = "Bypass Hold",
+ToggleFixLag = "Remove Extra Effects",
+WalkSpeedLabel = "WalkSpeed",
+WalkSpeedPlace = "Enter speed...",
+HopBtn = "🌐 Hop 1-Player Server",
+NotifDelay = "⏱ Harvest Delay set to: %ss",
+NotifSpeed = "⚡ Speed set to: %s",
+NotifSuccess = "⚡ HARVEST SUCCESSFUL!",
+NotifProcessed = "⚡ Lightning is about to strike your plants in 1-2 seconds, harvest them immediately! ",
+NotifHopSearch = "🌐 Searching for 1-player server...",
+NotifHopping = "🚀 Hopping to server...",
+NotifNoServer = "❌ No suitable server found!",
+NotifFailServer = "❌ Failed to fetch servers!"
+}
+}
+
+local function L(key, ...)
+local lang = Settings.Language
+local text = Locales[lang] and Locales[lang][key] or key
+if select("#", ...) > 0 then
+return string.format(text, ...)
+end
+return text
+end
+
+local ParentUI = (gethui and gethui()) or game:GetService("CoreGui")
+if ParentUI:FindFirstChild("FluentLightningUI") then
+ParentUI.FluentLightningUI:Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ScreenGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = ParentUI
+
+local RainbowGradients = {}
+local function ApplyRainbowBorder(parentObj, thickness)
+thickness = thickness or 2
+local stroke = Instance.new("UIStroke")
+stroke.Thickness = thickness
+stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+stroke.Color = Color3.fromRGB(255, 255, 255)
+stroke.Parent = parentObj
+
+local gradient = Instance.new("UIGradient")  
+gradient.Color = ColorSequence.new({  
+    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 0, 0)),  
+    ColorSequenceKeypoint.new(0.16, Color3.fromRGB(255, 127, 0)),  
+    ColorSequenceKeypoint.new(0.33, Color3.fromRGB(255, 255, 0)),  
+    ColorSequenceKeypoint.new(0.50, Color3.fromRGB(0, 255, 0)),  
+    ColorSequenceKeypoint.new(0.66, Color3.fromRGB(0, 150, 255)),  
+    ColorSequenceKeypoint.new(0.83, Color3.fromRGB(139, 0, 255)),  
+    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 0, 0))  
+})  
+gradient.Rotation = 0  
+gradient.Parent = stroke  
+
+table.insert(RainbowGradients, gradient)  
+return stroke
+
+end
+
+RunService.RenderStepped:Connect(function()
+local angle = (tick() * 180) % 360
+for i = #RainbowGradients, 1, -1 do
+local grad = RainbowGradients[i]
+if grad and grad.Parent then
+grad.Rotation = angle
+else
+table.remove(RainbowGradients, i)
+end
+end
+end)
+
+local function ShowDarkNotification(text)
+if not Settings.NotifyEnabled then return end
+
+local notif = Instance.new("TextLabel")  
+notif.Size = UDim2.fromOffset(350, 42)  
+notif.Position = UDim2.new(0.5, -175, 0, 15)  
+notif.BackgroundColor3 = Theme.DARK2  
+notif.TextColor3 = Theme.WHITE  
+notif.TextSize = 13  
+notif.Font = Enum.Font.GothamBold  
+notif.Text = text  
+notif.Parent = ScreenGui  
+
+local corner = Instance.new("UICorner")  
+corner.CornerRadius = UDim.new(0, 10)  
+corner.Parent = notif  
+
+ApplyRainbowBorder(notif, 2)  
+
+task.delay(2, function()  
+    if notif then notif:Destroy() end  
+end)
+
+end
+
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.new(0, 560, 0, 320)
+MainFrame.Position = UDim2.new(0.5, -280, 0.5, -160)
+MainFrame.BackgroundColor3 = Theme.Background
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
+ApplyRainbowBorder(MainFrame, 2)
+
+local TopBar = Instance.new("Frame", MainFrame)
+TopBar.Size = UDim2.new(1, 0, 0, 32)
+TopBar.BackgroundTransparency = 1
+
+local TitleLabel = Instance.new("TextLabel", TopBar)
+TitleLabel.Size = UDim2.new(1, -130, 1, 0)
+TitleLabel.Position = UDim2.new(0, 12, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "hoangtt.03 hub new version"
+TitleLabel.TextColor3 = Theme.Text
+TitleLabel.Font = Enum.Font.GothamMedium
+TitleLabel.TextSize = 12
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local LangBtn = Instance.new("TextButton", TopBar)
+LangBtn.Size = UDim2.new(0, 40, 0, 20)
+LangBtn.Position = UDim2.new(1, -110, 0.5, -10)
+LangBtn.BackgroundColor3 = Theme.Card
+LangBtn.Text = Settings.Language
+LangBtn.TextColor3 = Theme.Text
+LangBtn.Font = Enum.Font.GothamBold
+LangBtn.TextSize = 10
+Instance.new("UICorner", LangBtn).CornerRadius = UDim.new(0, 4)
+ApplyRainbowBorder(LangBtn, 1)
+
+local CloseBtn = Instance.new("TextButton", TopBar)
+CloseBtn.Size = UDim2.new(0, 32, 0, 32)
+CloseBtn.Position = UDim2.new(1, -32, 0, 0)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Theme.SubText
+CloseBtn.TextSize = 12
+
+local MiniBtn = Instance.new("TextButton", TopBar)
+MiniBtn.Size = UDim2.new(0, 32, 0, 32)
+MiniBtn.Position = UDim2.new(1, -64, 0, 0)
+MiniBtn.BackgroundTransparency = 1
+MiniBtn.Text = "─"
+MiniBtn.TextColor3 = Theme.SubText
+MiniBtn.TextSize = 12
+
+local OpenBtn = Instance.new("ImageButton", ScreenGui)
+OpenBtn.Size = UDim2.new(0, 50, 0, 50)
+OpenBtn.Position = UDim2.new(0, 15, 0.5, -25)
+OpenBtn.BackgroundColor3 = Theme.Card
+OpenBtn.Image = "rbxassetid://99987910110092"
+OpenBtn.Visible = false
+Instance.new("UICorner", OpenBtn).CornerRadius = UDim.new(1, 0)
+ApplyRainbowBorder(OpenBtn, 2)
+
+MiniBtn.MouseButton1Click:Connect(function()
+MainFrame.Visible = false
+OpenBtn.Visible = true
+end)
+
+OpenBtn.MouseButton1Click:Connect(function()
+MainFrame.Visible = true
+OpenBtn.Visible = false
+end)
+
+CloseBtn.MouseButton1Click:Connect(function()
+MainFrame.Visible = false
+OpenBtn.Visible = true
+end)
+
+local Sidebar = Instance.new("Frame", MainFrame)
+Sidebar.Size = UDim2.new(0, 150, 1, -32)
+Sidebar.Position = UDim2.new(0, 0, 0, 32)
+Sidebar.BackgroundColor3 = Theme.Sidebar
+Sidebar.BorderSizePixel = 0
+
+local SideLayout = Instance.new("UIListLayout", Sidebar)
+SideLayout.Padding = UDim.new(0, 4)
+SideLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+Instance.new("UIPadding", Sidebar).PaddingTop = UDim.new(0, 8)
+
+local ContentFrame = Instance.new("Frame", MainFrame)
+ContentFrame.Size = UDim2.new(1, -158, 1, -40)
+ContentFrame.Position = UDim2.new(0, 154, 0, 36)
+ContentFrame.BackgroundTransparency = 1
+
+local StatusContainer = Instance.new("Frame", ContentFrame)
+StatusContainer.Size = UDim2.new(1, -8, 0, 18)
+StatusContainer.BackgroundTransparency = 1
+
+local StatusLabel = Instance.new("TextLabel", StatusContainer)
+StatusLabel.Size = UDim2.new(1, 0, 1, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.TextColor3 = Theme.SubText
+StatusLabel.Font = Enum.Font.GothamMedium
+StatusLabel.TextSize = 10
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Text = L("StatusIdle")
+
+local function CreateTabScroll()
+local Scroll = Instance.new("ScrollingFrame", ContentFrame)
+Scroll.Size = UDim2.new(1, -8, 1, -24)
+Scroll.Position = UDim2.new(0, 0, 0, 24)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 2
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Instance.new("UIListLayout", Scroll).Padding = UDim.new(0, 8)
+return Scroll
+end
+
+local TabMain = CreateTabScroll()
+local TabOptimize = CreateTabScroll()
+local TabLocalPlayer = CreateTabScroll()
+
+TabOptimize.Visible = false
+TabLocalPlayer.Visible = false
+
+local UIComponents = {
+Sections = {},
+Toggles = {},
+TextBoxes = {},
+Buttons = {},
+Navs = {}
+}
+
+local function CreateSection(parent, titleKey, subKey)
+local Frame = Instance.new("Frame", parent)
+Frame.Size = UDim2.new(1, 0, 0, 48)
+Frame.BackgroundColor3 = Theme.Card
+Frame.BorderSizePixel = 0
+Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 6)
+ApplyRainbowBorder(Frame, 1.5)
+
+local Txt1 = Instance.new("TextLabel", Frame)  
+Txt1.Size = UDim2.new(1, -16, 0, 20)  
+Txt1.Position = UDim2.new(0, 10, 0, 6)  
+Txt1.BackgroundTransparency = 1  
+Txt1.Text = L(titleKey)  
+Txt1.TextColor3 = Theme.Text  
+Txt1.Font = Enum.Font.GothamBold  
+Txt1.TextSize = 12  
+Txt1.TextXAlignment = Enum.TextXAlignment.Left  
+
+local Txt2 = Instance.new("TextLabel", Frame)  
+Txt2.Size = UDim2.new(1, -16, 0, 18)  
+Txt2.Position = UDim2.new(0, 10, 0, 24)  
+Txt2.BackgroundTransparency = 1  
+Txt2.Text = L(subKey)  
+Txt2.TextColor3 = Theme.SubText  
+Txt2.Font = Enum.Font.Gotham  
+Txt2.TextSize = 10  
+Txt2.TextXAlignment = Enum.TextXAlignment.Left  
+
+table.insert(UIComponents.Sections, {Frame = Frame, Txt1 = Txt1, Txt2 = Txt2, TitleKey = titleKey, SubKey = subKey})  
+return Frame
+
+end
+
+local function CreateToggle(parent, toggleKey, defaultState, callback)
+local state = defaultState
+local Frame = Instance.new("Frame", parent)
+Frame.Size = UDim2.new(1, 0, 0, 36)
+Frame.BackgroundColor3 = Theme.Card
+Frame.BorderSizePixel = 0
+Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 6)
+ApplyRainbowBorder(Frame, 1.5)
+
+local Label = Instance.new("TextLabel", Frame)  
+Label.Size = UDim2.new(1, -60, 1, 0)  
+Label.Position = UDim2.new(0, 10, 0, 0)  
+Label.BackgroundTransparency = 1  
+Label.Text = L(toggleKey)  
+Label.TextColor3 = Theme.Text  
+Label.Font = Enum.Font.GothamMedium  
+Label.TextSize = 11  
+Label.TextXAlignment = Enum.TextXAlignment.Left  
+
+local ToggleBtn = Instance.new("TextButton", Frame)  
+ToggleBtn.Size = UDim2.new(0, 36, 0, 18)  
+ToggleBtn.Position = UDim2.new(1, -46, 0.5, -9)  
+ToggleBtn.BackgroundColor3 = state and Theme.ToggleOn or Theme.ToggleOff  
+ToggleBtn.Text = ""  
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(1, 0)  
+
+local Circle = Instance.new("Frame", ToggleBtn)  
+Circle.Size = UDim2.new(0, 14, 0, 14)  
+Circle.Position = state and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)  
+Circle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)  
+Instance.new("UICorner", Circle).CornerRadius = UDim.new(1, 0)  
+
+ToggleBtn.MouseButton1Click:Connect(function()  
+    state = not state  
+    TweenService:Create(ToggleBtn, TweenInfo.new(0.2), {BackgroundColor3 = state and Theme.ToggleOn or Theme.ToggleOff}):Play()  
+    TweenService:Create(Circle, TweenInfo.new(0.2), {Position = state and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)}):Play()  
+    callback(state)  
+end)  
+
+local comp = {Label = Label, Key = toggleKey, SetState = function(newState)  
+    state = newState  
+    ToggleBtn.BackgroundColor3 = state and Theme.ToggleOn or Theme.ToggleOff  
+    Circle.Position = state and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)  
+end}  
+table.insert(UIComponents.Toggles, comp)  
+return comp
+
+end
+
+local function CreateTextBox(parent, labelKey, placeKey, defaultVal, callback)
+local Frame = Instance.new("Frame", parent)
+Frame.Size = UDim2.new(1, 0, 0, 36)
+Frame.BackgroundColor3 = Theme.Card
+Frame.BorderSizePixel = 0
+Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 6)
+ApplyRainbowBorder(Frame, 1.5)
+
+local Label = Instance.new("TextLabel", Frame)  
+Label.Size = UDim2.new(0.5, -10, 1, 0)  
+Label.Position = UDim2.new(0, 10, 0, 0)  
+Label.BackgroundTransparency = 1  
+Label.Text = L(labelKey)  
+Label.TextColor3 = Theme.Text  
+Label.Font = Enum.Font.GothamMedium  
+Label.TextSize = 11  
+Label.TextXAlignment = Enum.TextXAlignment.Left  
+
+local Box = Instance.new("TextBox", Frame)  
+Box.Size = UDim2.new(0.4, 0, 0, 24)  
+Box.Position = UDim2.new(0.57, 0, 0.5, -12)  
+Box.BackgroundColor3 = Theme.Sidebar  
+Box.TextColor3 = Theme.Text  
+Box.PlaceholderText = L(placeKey)  
+Box.PlaceholderColor3 = Theme.SubText  
+Box.Font = Enum.Font.Gotham  
+Box.TextSize = 11  
+Box.Text = tostring(defaultVal or "")  
+Instance.new("UICorner", Box).CornerRadius = UDim.new(0, 4)  
+
+Box.FocusLost:Connect(function()  
+    callback(Box.Text)  
+end)  
+
+table.insert(UIComponents.TextBoxes, {Label = Label, Box = Box, LabelKey = labelKey, PlaceKey = placeKey})
+
+end
+
+local function CreateButton(parent, btnKey, callback)
+local Frame = Instance.new("Frame", parent)
+Frame.Size = UDim2.new(1, 0, 0, 36)
+Frame.BackgroundColor3 = Theme.Card
+Frame.BorderSizePixel = 0
+Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 6)
+ApplyRainbowBorder(Frame, 1.5)
+
+local Btn = Instance.new("TextButton", Frame)  
+Btn.Size = UDim2.new(1, 0, 1, 0)  
+Btn.BackgroundTransparency = 1  
+Btn.Text = L(btnKey)  
+Btn.TextColor3 = Theme.Text  
+Btn.Font = Enum.Font.GothamBold  
+Btn.TextSize = 11  
+
+Btn.MouseButton1Click:Connect(callback)  
+
+table.insert(UIComponents.Buttons, {Btn = Btn, Key = btnKey})
+
+end
+
+local function CreateNavBtn(titleKey)
+local Btn = Instance.new("TextButton", Sidebar)
+Btn.Size = UDim2.new(0.9, 0, 0, 30)
+Btn.BackgroundColor3 = Theme.Sidebar
+Btn.BackgroundTransparency = 1
+Btn.Text = L(titleKey)
+Btn.TextColor3 = Theme.SubText
+Btn.Font = Enum.Font.GothamMedium
+Btn.TextSize = 11
+Btn.TextXAlignment = Enum.TextXAlignment.Left
+Instance.new("UIPadding", Btn).PaddingLeft = UDim.new(0, 10)
+Instance.new("UICorner", Btn).CornerRadius = UDim.new(0, 6)
+
+table.insert(UIComponents.Navs, {Btn = Btn, Key = titleKey})  
+return Btn
+
+end
+
+local Nav1 = CreateNavBtn("NavRadar")
+local Nav2 = CreateNavBtn("NavOpt")
+local Nav3 = CreateNavBtn("NavPlayer")
+
+local function SwitchTab(activeBtn, activeTab)
+Nav1.TextColor3 = Theme.SubText Nav1.BackgroundTransparency = 1
+Nav2.TextColor3 = Theme.SubText Nav2.BackgroundTransparency = 1
+Nav3.TextColor3 = Theme.SubText Nav3.BackgroundTransparency = 1
+
+activeBtn.TextColor3 = Theme.Text  
+activeBtn.BackgroundColor3 = Theme.Card  
+activeBtn.BackgroundTransparency = 0  
+
+TabMain.Visible = false  
+TabOptimize.Visible = false  
+TabLocalPlayer.Visible = false  
+activeTab.Visible = true
+
+end
+
+Nav1.MouseButton1Click:Connect(function() SwitchTab(Nav1, TabMain) end)
+Nav2.MouseButton1Click:Connect(function() SwitchTab(Nav2, TabOptimize) end)
+Nav3.MouseButton1Click:Connect(function() SwitchTab(Nav3, TabLocalPlayer) end)
+SwitchTab(Nav1, TabMain)
+
+local StartMonitoring, StopMonitoring, updateUI
+
+local function RefreshLanguage()
+LangBtn.Text = Settings.Language
+
+for _, comp in ipairs(UIComponents.Sections) do  
+    comp.Txt1.Text = L(comp.TitleKey)  
+    comp.Txt2.Text = L(comp.SubKey)  
+end  
+
+for _, comp in ipairs(UIComponents.Toggles) do  
+    comp.Label.Text = L(comp.Key)  
+end  
+
+for _, comp in ipairs(UIComponents.TextBoxes) do  
+    comp.Label.Text = L(comp.LabelKey)  
+    comp.Box.PlaceholderText = L(comp.PlaceKey)  
+end  
+
+for _, comp in ipairs(UIComponents.Buttons) do  
+    comp.Btn.Text = L(comp.Key)  
+end  
+
+for _, comp in ipairs(UIComponents.Navs) do  
+    comp.Btn.Text = L(comp.Key)  
+end  
+
+if Settings.Enabled then  
+    if State.IsProcessing then  
+        StatusLabel.Text = L("StatusArrived")  
+    elseif State.LightningHits > 0 then  
+        if State.LightningHits < 3 then  
+            StatusLabel.Text = L("StatusHits", State.LightningHits)  
+        else  
+            StatusLabel.Text = L("StatusHarvest", State.LightningHits)  
+        end  
+    else  
+        StatusLabel.Text = L("StatusIdle")  
+    end  
+else  
+    StatusLabel.Text = L("StatusDisabled")  
+end
+
+end
+
+LangBtn.MouseButton1Click:Connect(function()
+if Settings.Language == "VIE" then
+Settings.Language = "ENG"
+else
+Settings.Language = "VIE"
+end
+RefreshLanguage()
+end)
+
+CreateSection(TabMain, "SecRadarTitle", "SecRadarSub")
+
+local ToggleEnable = CreateToggle(TabMain, "ToggleRadar", Settings.Enabled, function(val)
+Settings.Enabled = val
+if Settings.Enabled then StartMonitoring() else StopMonitoring() end
+end)
+
+local ToggleAuto1 = CreateToggle(TabMain, "ToggleAuto", Settings.AutoHarvest, function(val)
+Settings.AutoHarvest = val
+updateUI()
+end)
+
+CreateTextBox(TabMain, "HarvestDelayLabel", "HarvestDelayPlace", Settings.HarvestDelay, function(txt)
+local num = tonumber(txt)
+if num and num >= 0 then
+Settings.HarvestDelay = num
+ShowDarkNotification(L("NotifDelay", num))
+end
+end)
+
+local ToggleNotify = CreateToggle(TabMain, "ToggleNotify", Settings.NotifyEnabled, function(val)
+Settings.NotifyEnabled = val
+end)
+
+local ToggleBypass = CreateToggle(TabMain, "ToggleBypass", Settings.BypassHold, function(val)
+Settings.BypassHold = val
+end)
+
+CreateSection(TabOptimize, "SecOptTitle", "SecOptSub")
+
+local ToggleFixLag = CreateToggle(TabOptimize, "ToggleFixLag", Settings.FixLag, function(val)
+Settings.FixLag = val
+if Settings.FixLag then
+Lighting.GlobalShadows = false
+Lighting.FogEnd = 9e9
+for _, obj in ipairs(Workspace:GetDescendants()) do
+if obj:IsA("BasePart") then
+obj.Material = Enum.Material.SmoothPlastic
+elseif obj:IsA("ParticleEmitter") or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
+obj.Enabled = false
+end
+end
+else
+Lighting.GlobalShadows = true
+end
+end)
+
+CreateSection(TabLocalPlayer, "SecPlayerTitle", "SecPlayerSub")
+
+CreateTextBox(TabLocalPlayer, "WalkSpeedLabel", "WalkSpeedPlace", Settings.WalkSpeed, function(txt)
+local num = tonumber(txt)
+if num then
+Settings.WalkSpeed = num
+Settings.CustomSpeedEnabled = true
+if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+LocalPlayer.Character.Humanoid.WalkSpeed = Settings.WalkSpeed
+end
+ShowDarkNotification(L("NotifSpeed", num))
+end
+end)
+
+local function HopLowServer()
+ShowDarkNotification(L("NotifHopSearch"))
+local placeId = game.PlaceId
+local serversUrl = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
+
+local success, result = pcall(function()  
+    return HttpService:JSONDecode(game:HttpGet(serversUrl))  
+end)  
+
+if success and result and result.data then  
+    local targetServer  
+    for _, server in ipairs(result.data) do  
+        if server.playing and server.playing == 1 and server.id ~= game.JobId then  
+            targetServer = server.id  
+            break  
+        end  
+    end  
+
+    if not targetServer then  
+        for _, server in ipairs(result.data) do  
+            if server.playing and server.playing < server.maxPlayers and server.id ~= game.JobId then  
+                targetServer = server.id  
+                break  
+            end  
+        end  
+    end  
+
+    if targetServer then  
+        ShowDarkNotification(L("NotifHopping"))  
+        TeleportService:TeleportToPlaceInstance(placeId, targetServer, LocalPlayer)  
+    else  
+        ShowDarkNotification(L("NotifNoServer"))  
+    end  
+else  
+    ShowDarkNotification(L("NotifFailServer"))  
+end
+
+end
+
+CreateButton(TabLocalPlayer, "HopBtn", function()
+HopLowServer()
+end)
+
+RunService.Stepped:Connect(function()
+if Settings.CustomSpeedEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+if LocalPlayer.Character.Humanoid.WalkSpeed ~= Settings.WalkSpeed then
+LocalPlayer.Character.Humanoid.WalkSpeed = Settings.WalkSpeed
+end
+end
+end)
+
+updateUI = function()
+ToggleEnable.SetState(Settings.Enabled)
+ToggleAuto1.SetState(Settings.AutoHarvest)
+ToggleNotify.SetState(Settings.NotifyEnabled)
+ToggleFixLag.SetState(Settings.FixLag)
+ToggleBypass.SetState(Settings.BypassHold)
+end
+
+local function IsNearPlayer(object, maxDistance)
+maxDistance = maxDistance or Settings.MaxDistance
+local Character = LocalPlayer.Character
+
+if not Character or not Character:FindFirstChild("HumanoidRootPart") then  
+    return true  
+end  
+
+local PlayerPos = Character.HumanoidRootPart.Position  
+local ObjPos  
+
+if object:IsA("BasePart") then  
+    ObjPos = object.Position  
+elseif object:IsA("Model") then  
+    ObjPos = object.PrimaryPart and object.PrimaryPart.Position or object:GetPivot().Position  
+elseif object:IsA("Attachment") then  
+    ObjPos = object.WorldPosition  
+end  
+
+if ObjPos then  
+    return (PlayerPos - ObjPos).Magnitude <= maxDistance  
+end  
+
+return true
+
+end
+
+local function IsEarlyLightningSignal(object)
+local name = string.lower(object.Name)
+local keywords = {
+"lightning", "strike", "warning", "thunder", "spark", "cloud",
+"indicator", "redcircle", "danger", "target", "charge", "aura",
+"flash", "electric", "pre_strike", "spawn"
+}
+
+for _, word in ipairs(keywords) do  
+    if string.find(name, word) then return true end  
+end  
+
+if object:IsA("ParticleEmitter") or object:IsA("Beam") or object:IsA("Highlight") or object:IsA("Sound") then  
+    local parentName = string.lower(object.Parent and object.Parent.Name or "")  
+    for _, word in ipairs(keywords) do  
+        if string.find(parentName, word) then return true end  
+    end  
+end  
+
+return false
+
+end
+
+local function FireHarvest(targetObj)
+if not Settings.Enabled or not Settings.AutoHarvest then return end
+
+local prompt  
+if targetObj then  
+    if targetObj:IsA("ProximityPrompt") then  
+        prompt = targetObj  
+    else  
+        prompt = targetObj:FindFirstChildWhichIsA("ProximityPrompt", true)  
+    end  
+end  
+
+if not prompt and LocalPlayer.Character then  
+    local myPos = LocalPlayer.Character.HumanoidRootPart.Position  
+    local minDist = Settings.MaxDistance  
+    for _, v in ipairs(Workspace:GetDescendants()) do  
+        if v:IsA("ProximityPrompt") and v.Enabled and v.Parent and v.Parent:IsA("BasePart") then  
+            local dist = (myPos - v.Parent.Position).Magnitude  
+            if dist <= minDist then  
+                prompt = v  
+                minDist = dist  
+            end  
+        end  
+    end  
+end  
+
+if prompt and prompt.Enabled then  
+    if Settings.BypassHold then prompt.HoldDuration = 0 end  
+    task.spawn(function()  
+        for _ = 1, Settings.AutoRetry do  
+            fireproximityprompt(prompt)  
+            task.wait(0.05)  
+        end  
+    end)  
+    ShowDarkNotification(L("NotifSuccess"))  
+end
+
+end
+
+local function TriggerActionSequence(sourceObj)
+if State.IsProcessing then return end
+State.IsProcessing = true
+State.IsIdle = false
+
+if Settings.HarvestDelay > 0 then  
+    StatusLabel.Text = L("StatusWaiting", Settings.HarvestDelay)  
+    task.wait(Settings.HarvestDelay)  
+end  
+
+if Settings.AutoHarvest then  
+    FireHarvest(sourceObj)  
+end  
+
+StatusLabel.Text = L("StatusArrived")  
+ShowDarkNotification(L("NotifProcessed"))  
+task.wait(2)  
+
+State.LightningHits = 0  
+State.IsProcessing = false  
+State.IsIdle = true  
+
+if Settings.Enabled then  
+    StatusLabel.Text = L("StatusIdle")  
+end
+
+end
+
+local sweepConnection = nil
+local loopConnection = nil
+
+StartMonitoring = function()
+if sweepConnection then sweepConnection:Disconnect() end
+if loopConnection then task.cancel(loopConnection) end
+
+sweepConnection = Workspace.DescendantAdded:Connect(function(child)  
+    if not Settings.Enabled or State.IsProcessing then return end  
+
+    if IsEarlyLightningSignal(child) and IsNearPlayer(child) then  
+        State.LightningHits = State.LightningHits + 1  
+          
+        if State.LightningHits < 3 then  
+            StatusLabel.Text = L("StatusHits", State.LightningHits)  
+            return  
+        end  
+          
+        if State.LightningHits >= 3 then  
+            StatusLabel.Text = L("StatusHarvest", State.LightningHits)  
+            task.spawn(function()  
+                TriggerActionSequence(child)  
+            end)  
+        end  
+    end  
+end)  
+
+loopConnection = task.spawn(function()  
+    while Settings.Enabled do  
+        task.wait(0.2)  
+        if not State.IsProcessing then  
+            for _, obj in ipairs(Workspace:GetChildren()) do  
+                if IsEarlyLightningSignal(obj) and IsNearPlayer(obj) then  
+                    State.LightningHits = State.LightningHits + 1  
+                      
+                    if State.LightningHits < 3 then  
+                        StatusLabel.Text = L("StatusHits", State.LightningHits)  
+                    elseif State.LightningHits >= 3 then  
+                        StatusLabel.Text = L("StatusHarvest", State.LightningHits)  
+                        task.spawn(function()  
+                            TriggerActionSequence(obj)  
+                        end)  
+                    end  
+                    task.wait(1)  
+                    break  
+                end  
+            end  
+        end  
+    end  
+end)
+
+end
+
+StopMonitoring = function()
+if sweepConnection then sweepConnection:Disconnect() end
+if loopConnection then task.cancel(loopConnection) end
+StatusLabel.Text = L("StatusDisabled")
+end
+
+if Settings.Enabled then
+StartMonitoring()
+end
+updateUI()
