@@ -1,0 +1,2665 @@
+--[[
+    ZEN APEX HUB - MERGED EDITION
+    Kết hợp: Apex Hub (File 1) + ZenHubX (File 2) + ThanhDuy Hub (File 3)
+    Tính năng: Auto Steal, Pathfinding, Anti-Cheat, ESP, Visual Pets, Webhook, Server Hop
+    PART 1/5: BOOTSTRAP + SERVICES + CONFIG
+--]]
+
+-- ============ COMPAT SHIMS ============
+local _G_ENV = (getgenv and getgenv()) or _G
+if type(table.pack) ~= "function" then function table.pack(...) return { n = select("#", ...), ... } end end
+if type(table.unpack) ~= "function" then table.unpack = unpack end
+if type(typeof) ~= "function" then typeof = type end
+if type(math.clamp) ~= "function" then
+    function math.clamp(v, mn, mx) if v < mn then return mn elseif v > mx then return mx end return v end
+end
+if type(table.find) ~= "function" then
+    function table.find(t, v, init)
+        if type(t) ~= "table" then return nil end
+        for i = tonumber(init) or 1, #t do if t[i] == v then return i end end
+        return nil
+    end
+end
+
+local genv = _G_ENV
+if type(genv.__ZEN_APEX_SHUTDOWN) == "function" then pcall(genv.__ZEN_APEX_SHUTDOWN); task.wait(0.1) end
+if genv.__ZEN_APEX_RUNNING then return end
+genv.__ZEN_APEX_RUNNING = true
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+-- ============ SERVICES ============
+local Players            = game:GetService("Players")
+local RunService         = game:GetService("RunService")
+local HttpService        = game:GetService("HttpService")
+local TeleportService    = game:GetService("TeleportService")
+local UserInputService   = game:GetService("UserInputService")
+local Lighting           = game:GetService("Lighting")
+local VirtualUser        = game:GetService("VirtualUser")
+local Workspace          = game:GetService("Workspace")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local GuiService         = game:GetService("GuiService")
+local CoreGui            = game:GetService("CoreGui")
+local TweenService       = game:GetService("TweenService")
+local PathfindingService = game:GetService("PathfindingService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+pcall(function() LocalPlayer:WaitForChild("PlayerGui", 10) end)
+
+-- ============ CONFIG ============
+local DISCORD_LINK = "https://discord.gg/kptjwzKWgX"
+local TOGGLE_ICON  = "rbxassetid://131679774975668"
+local HEADER_TEXT  = "Zen Apex Hub"
+local SUBTITLE     = "Discord: " .. DISCORD_LINK
+
+-- ============ STATE CHUNG ============
+local running = true
+local conns = {}
+local CurrentJobId = tostring(game.JobId)
+local DisplayJobId = CurrentJobId
+if #DisplayJobId > 18 then DisplayJobId = string.sub(DisplayJobId, 1, 18) .. "..." end
+
+local IsCarryingEgg = false
+local SessionStolenEggs = 0
+local AutomationBusy = false
+local AutomationLastRunAt = {}
+local TreadmillTrainingActive = false
+local ServerHopInProgress = false
+local ServerHopRetryAfter = 0
+local NoMatchingEggsSince = 0
+local HopIntervalStartedAt = os.clock()
+local LastTeleportFailure = nil
+local LastEquipBestAt = 0
+local NextPlacementIndex = 1
+local PlotFullUntil = 0
+local LastInputAt = tick()
+local LastAntiAfkAt = tick()
+local RenderingDisabled = false
+local FpsBoostSnapshot = nil
+local FpsDescendantAddedConnection = nil
+local SessionStartedAt = os.clock()
+local LastWebhookSummaryAt = os.clock()
+local KnownWorldEggUids, KnownInventoryUids = {}, {}
+local WebhookTrackerInitialized = false
+local LastRebirthSnapshot = nil
+local LastStealCountSnapshot = 0
+local SummaryStolenEggs, SummaryPetsObtained, SummaryRebirths = 0, 0, 0
+local SpawnedEggLog, ObtainedEggLog = {}, {}
+local EspEntries, EspSeenThisPass = {}, {}
+
+-- Config chung
+local Config = {
+    Enabled = true,
+    StealSpeed = 800,
+    BypassSpeed = 900,
+    BaseReturnArrive = 4,
+    StealHoldTime = 3,
+    GrabDelay = 0.55,
+    ArriveDistance = 1.35,
+    TP_STEP = 45,
+    TP_WAIT = 0.08,
+    TreadmillSpeed = 60,
+    Priority = { "Auto Steal Egg", "Auto Place Egg", "Auto Hatch", "Auto Treadmill" }
+}
+
+-- Rarity ladder
+local RARITIES = { "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Cosmic", "Secret", "Eternal", "Divine" }
+local RarityWeight = {
+    Common=1, Uncommon=2, Rare=3, Epic=4, Legendary=5,
+    Mythic=6, Cosmic=7, Secret=8, Eternal=9, Divine=10,
+}
+local MUTATIONS = { "Golden", "Rainbow", "Silver" }
+local STEAL_PRIORITIES = { "Rarest", "Nearest", "Furthest", "Biggest Size" }
+local FUSE_TARGET_MODES = { "Highest Rarity", "Lowest Rarity", "Most Duplicates" }
+local UPGRADE_TYPES = { "Base", "Treadmill" }
+local PriorityTaskNames = { "Auto Steal Egg", "Auto Place Egg", "Auto Hatch", "Auto Treadmill" }
+local PrioritySlotOptionNames = { "PrioritySlot1", "PrioritySlot2", "PrioritySlot3", "PrioritySlot4" }
+local ServerHopModes = { "No Matching Eggs", "Timed Interval", "After Steal Count" }
+local AREA_ORDER = { "Forest", "Lake", "Desert", "Jungle", "Snow", "Volcano", "Abyss Ocean", "Prehistoric", "Cosmic" }
+
+local VisitedServerIds = {}
+if getgenv then
+    local history = getgenv().ZenApexHopHistory
+    if typeof(history) ~= "table" then history = {}; getgenv().ZenApexHopHistory = history end
+    VisitedServerIds = history
+end
+
+-- ============ MODULE LOADER ============
+local H = {}
+function H.cloneList(src)
+    local out = {}
+    if type(src) ~= "table" then return out end
+    for i = 1, #src do out[i] = src[i] end
+    return out
+end
+function H.clearTable(tbl)
+    if type(tbl) ~= "table" then return end
+    for k in pairs(tbl) do tbl[k] = nil end
+end
+function H.waitFor(timeout, interval, check)
+    local deadline = os.clock() + (tonumber(timeout) or 1)
+    local gap = tonumber(interval) or 0.05
+    local passed = false
+    repeat
+        if check and check() == true then passed = true
+        elseif running and os.clock() < deadline then task.wait(gap) end
+    until passed or (not running) or os.clock() >= deadline
+    return passed
+end
+function H.requirePath(root, timeout, ...)
+    local cur = root
+    local names = { ... }
+    for _, name in ipairs(names) do
+        if not cur then return nil end
+        local child = cur:FindFirstChild(name)
+        if not child then child = cur:WaitForChild(name, timeout or 4) end
+        cur = child
+    end
+    if not cur then return nil end
+    local ok, mod = pcall(require, cur)
+    return ok and mod or nil
+end
+function H.findModule(name)
+    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if d:IsA("ModuleScript") and d.Name == name then
+            local ok, mod = pcall(require, d)
+            if ok then return mod end
+        end
+    end
+    return nil
+end
+function H.findRemote(name)
+    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) and d.Name == name then return d end
+    end
+    return nil
+end
+function H.findRemoteContains(...)
+    local parts = { ... }
+    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+            local ok = true
+            for _, part in ipairs(parts) do
+                if not string.find(d.Name, part, 1, true) then ok = false; break end
+            end
+            if ok then return d end
+        end
+    end
+    return nil
+end
+function H.pickFromTable(tbl, ...)
+    if typeof(tbl) ~= "table" then return nil end
+    local names = { ... }
+    local cur = tbl
+    for _, name in ipairs(names) do
+        if typeof(cur) ~= "table" then return nil end
+        cur = cur[name]
+    end
+    return cur
+end
+function H.pickFn(mod, ...)
+    if typeof(mod) ~= "table" then return nil end
+    for i = 1, select("#", ...) do
+        local key = select(i, ...)
+        local fn = mod[key]
+        if typeof(fn) == "function" then return fn end
+    end
+    return nil
+end
+function H.remoteFrom(mod, ...)
+    local inst = H.pickFromTable(mod, ...)
+    if typeof(inst) == "Instance" then return inst end
+    return nil
+end
+
+-- Nạp modules game
+local SaveModule        = H.requirePath(ReplicatedStorage, 6, "Shared", "Save") or H.findModule("Save")
+local Constants         = H.requirePath(ReplicatedStorage, 4, "Shared", "Globals", "Constants") or H.findModule("Constants")
+local BaseUpgradeModule = H.requirePath(ReplicatedStorage, 4, "Client", "BaseUpgrade") or H.findModule("BaseUpgrade")
+local EggTypes          = H.requirePath(ReplicatedStorage, 4, "Shared", "Types", "Eggs") or H.findModule("Eggs")
+local AreasModule       = H.requirePath(ReplicatedStorage, 4, "Data", "Areas") or H.findModule("Areas")
+local AssetsData        = H.requirePath(ReplicatedStorage, 4, "Data", "Assets") or H.findModule("Assets")
+local GearsModule       = H.requirePath(ReplicatedStorage, 4, "Data", "Gears") or H.findModule("Gears")
+local TrailsModule      = H.requirePath(ReplicatedStorage, 4, "Data", "Trails") or H.findModule("Trails")
+local TreadmillsData    = H.requirePath(ReplicatedStorage, 4, "Data", "Treadmills") or H.findModule("Treadmills")
+local EggStateModule    = H.requirePath(ReplicatedStorage, 6, "Client", "EggState") or H.findModule("EggState")
+local PlotStateModule   = H.requirePath(ReplicatedStorage, 6, "Client", "PlotState") or H.findModule("PlotState")
+local SlotIdentityModule= H.requirePath(ReplicatedStorage, 4, "Shared", "Util", "AreaEggSlotIdentity") or H.findModule("AreaEggSlotIdentity")
+local AssetRosterModule = H.requirePath(ReplicatedStorage, 4, "Client", "AssetRoster") or H.findModule("AssetRoster")
+local AssetItemsModule  = H.requirePath(ReplicatedStorage, 4, "Shared", "Util", "AssetItems") or H.findModule("AssetItems")
+local FuseKernelModule  = H.requirePath(ReplicatedStorage, 4, "Shared", "Util", "FuseKernel") or H.findModule("FuseKernel")
+local RemotesModule     = H.requirePath(ReplicatedStorage, 6, "Shared", "Remotes") or H.findModule("Remotes")
+
+-- APIs
+local EggApi = {
+    GetAreaEggSnapshot = H.pickFn(EggStateModule, "ReadFieldEggs", "GetAreaEggSnapshot"),
+    RequestAreaEggSnapshot = H.pickFn(EggStateModule, "SyncFieldEggs", "RequestAreaEggSnapshot"),
+    AreaEggCarryStateChanged = EggStateModule and (EggStateModule.CarryChanged or EggStateModule.AreaEggCarryStateChanged),
+    RequestCarryAreaEgg = H.pickFn(EggStateModule, "CarryFieldEgg", "RequestCarryAreaEgg"),
+    RequestDropHeldAreaEgg = H.pickFn(EggStateModule, "DropFieldEgg", "RequestDropHeldAreaEgg"),
+    IsLocalEggReady = H.pickFn(EggStateModule, "IsReadyToHatch", "IsLocalEggReady"),
+    RequestHatchEgg = H.pickFn(EggStateModule, "BeginHatch", "RequestHatchEgg"),
+    RequestCompleteHatchEgg = H.pickFn(EggStateModule, "FinishHatch", "RequestCompleteHatchEgg"),
+    RequestEquipTool = H.pickFn(EggStateModule, "WearEggTool", "RequestEquipTool"),
+    RequestPlaceEgg = H.pickFn(EggStateModule, "PlantEgg", "RequestPlaceEgg"),
+}
+local PlotApi = {
+    GetRespawnPointCFrame = H.pickFn(PlotStateModule, "FindRespawnCFrame", "GetRespawnPointCFrame"),
+    GetPlotData = H.pickFn(PlotStateModule, "ResolvePlot", "GetPlotData"),
+    IsWorldPositionWithinLocalPlotBounds = H.pickFn(PlotStateModule, "ContainsLocalPoint", "IsWorldPositionWithinLocalPlotBounds"),
+    GetSlotOwner = H.pickFn(PlotStateModule, "LookupOwner", "GetSlotOwner"),
+}
+local SlotIdentityApi = {
+    IsFirstAreaUid = H.pickFn(SlotIdentityModule, "LooksLikeFirstAreaUid", "IsFirstAreaUid"),
+    BuildSlotKey = H.pickFn(SlotIdentityModule, "SlotKey", "BuildSlotKey"),
+}
+local AssetRosterApi = { GetRuntimeSnapshot = H.pickFn(AssetRosterModule, "ReadSnapshot", "GetRuntimeSnapshot") }
+local AssetItemsApi = { Deserialize = H.pickFn(AssetItemsModule, "Decode", "Deserialize") }
+local FuseApi = {
+    CanSelectPet = H.pickFn(FuseKernelModule, "MayEnterFuse", "CanSelectPet"),
+    CalculateFusePrice = H.pickFn(FuseKernelModule, "PriceFor", "CalculateFusePrice"),
+}
+
+-- Remotes chính
+local Remotes = {
+    Backpack = { EQUIP_BEST = H.remoteFrom(RemotesModule, "Haul", "WearBest") or H.findRemoteContains("WearBest") },
+    Plots = { REQUEST_BASE_UPGRADE = H.remoteFrom(RemotesModule, "Homestead", "AskBaseTierRaise") or H.findRemoteContains("BaseUpgrade") },
+    Treadmills = {
+        REQUEST_UPGRADE = H.remoteFrom(RemotesModule, "Treadmill", "AskTierRaise") or H.findRemoteContains("AskTierRaise"),
+        REQUEST_EQUIP_STATIC = H.remoteFrom(RemotesModule, "Treadmill", "AskWearStill") or H.findRemoteContains("AskWearStill"),
+        REQUEST_UNEQUIP = H.remoteFrom(RemotesModule, "Treadmill", "AskDoff") or H.findRemoteContains("AskDoff"),
+    },
+    Index = { REQUEST_CLAIM_ALL = H.remoteFrom(RemotesModule, "Codex", "AskRedeemAll") or H.findRemoteContains("AskRedeemAll") },
+    AssetInventory = { SELL_ASSET = H.remoteFrom(RemotesModule, "PetSatchel", "SellPet") or H.findRemoteContains("SellPet") },
+    OfflineAssets = {
+        GET_SUMMARY = H.remoteFrom(RemotesModule, "AwayEarnings", "FetchSummary") or H.findRemoteContains("FetchSummary"),
+        REQUEST_REDEEM = H.remoteFrom(RemotesModule, "AwayEarnings", "AskCollect") or H.findRemoteContains("AskCollect"),
+    },
+    FuseMachine = {
+        COMPLETE_REVEAL = H.remoteFrom(RemotesModule, "Fusery", "FinishReveal") or H.findRemoteContains("FinishReveal"),
+        ACKNOWLEDGE_INFO = H.remoteFrom(RemotesModule, "Fusery", "ConfirmBriefing") or H.findRemoteContains("ConfirmBriefing"),
+        INSERT_MOB = H.remoteFrom(RemotesModule, "Fusery", "LoadPet") or H.findRemoteContains("LoadPet"),
+        START_FUSE = H.remoteFrom(RemotesModule, "Fusery", "BeginFuse") or H.findRemoteContains("BeginFuse"),
+    },
+    Trails = {
+        REQUEST_PURCHASE = H.remoteFrom(RemotesModule, "Trailwear", "AskPurchase") or H.findRemoteContains("AskPurchase"),
+        REQUEST_SELECT = H.remoteFrom(RemotesModule, "Trailwear", "AskChoose") or H.findRemoteContains("AskChoose"),
+        WORN_SNAPSHOT = H.remoteFrom(RemotesModule, "Trailwear", "AskWornSnapshot") or H.findRemoteContains("AskWornSnapshot"),
+    },
+    GroupReward = { CLAIM_REWARD = H.remoteFrom(RemotesModule, "GroupPerk", "RedeemPerk") or H.findRemoteContains("RedeemPerk") },
+}
+
+-- Remotes dự phòng
+local CarryRemote    = H.findRemote("RF/EggWorld/AskFieldEggCarry") or H.findRemoteContains("AskFieldEggCarry")
+local SnapshotRemote = H.findRemote("RF/EggWorld/AskFieldEggSnapshot") or H.findRemoteContains("AskFieldEggSnapshot")
+local PlaceRemote    = H.findRemote("RF/EggWorld/AskPlaceEgg") or H.findRemoteContains("AskPlaceEgg")
+
+if not EggApi.RequestCarryAreaEgg and CarryRemote then
+    EggApi.RequestCarryAreaEgg = function(uid, slotKey)
+        if CarryRemote:IsA("RemoteFunction") then return CarryRemote:InvokeServer(uid, slotKey) end
+        CarryRemote:FireServer(uid, slotKey); return true
+    end
+end
+if not EggApi.RequestAreaEggSnapshot and SnapshotRemote then
+    EggApi.RequestAreaEggSnapshot = function()
+        if SnapshotRemote:IsA("RemoteFunction") then return SnapshotRemote:InvokeServer() end
+        SnapshotRemote:FireServer()
+    end
+end
+if not EggApi.RequestPlaceEgg and PlaceRemote then
+    EggApi.RequestPlaceEgg = function(uid, cframe)
+        if PlaceRemote:IsA("RemoteFunction") then return PlaceRemote:InvokeServer(uid, cframe) end
+        PlaceRemote:FireServer(uid, cframe); return true
+    end
+end
+
+-- Đăng ký connection
+function H.track(c) table.insert(conns, c); return c end
+
+-- Đăng ký state từ UI (được khởi tạo ở Part 5)
+local UI = {}
+UI.__state = {}
+UI.__callbacks = {}
+UI.__tabs = {}
+UI.__activeTab = nil
+UI.__connections = {}
+
+function UI.GetState(id) return UI.__state[id] end
+function UI.SetState(id, value, fire)
+    UI.__state[id] = value
+    if fire and UI.__callbacks[id] then
+        for _, cb in ipairs(UI.__callbacks[id]) do pcall(cb, value) end
+    end
+end
+function UI.OnChange(id, callback)
+    UI.__callbacks[id] = UI.__callbacks[id] or {}
+    table.insert(UI.__callbacks[id], callback)
+end
+
+function H.getState(id, fallback)
+    local v = UI.GetState(id)
+    if v ~= nil then return v end
+    return fallback
+end
+function H.isOn(id) return UI.GetState(id) == true end
+function H.optionValue(id, fallback)
+    local v = UI.GetState(id)
+    if v == nil then return fallback end
+    return v
+end
+function H.multiSelected(id)
+    local value = UI.GetState(id)
+    local selected = {}
+    if typeof(value) ~= "table" then
+        if typeof(value) == "string" and value ~= "" then selected[value] = true end
+        return selected
+    end
+    for key, item in pairs(value) do
+        if item == true then selected[key] = true
+        elseif typeof(key) == "number" and typeof(item) == "string" then selected[item] = true end
+    end
+    return selected
+end
+function H.multiHasAny(id) return next(H.multiSelected(id)) ~= nil end
+function H.selectionAllows(id, value)
+    if not H.multiHasAny(id) then return true end
+    return H.multiSelected(id)[value] == true
+end
+
+-- Kết thúc Part 1-- ============ PART 2/5: CORE UTILITIES ============
+-- Character, Save, Pathfinding, Anti-Cheat, Area Data, Egg Data
+
+-- ============ CHARACTER HELPERS ============
+function H.getHumanoid()
+    local ch = LocalPlayer.Character
+    return ch and ch:FindFirstChildOfClass("Humanoid") or nil
+end
+function H.getRoot()
+    local ch = LocalPlayer.Character
+    return ch and ch:FindFirstChild("HumanoidRootPart") or nil
+end
+function H.getSave()
+    if not SaveModule or typeof(SaveModule.Get) ~= "function" then return nil end
+    local ok, save = pcall(SaveModule.Get)
+    return ok and save or nil
+end
+function H.netInvoke(remote, ...)
+    if typeof(remote) ~= "Instance" then return nil end
+    local args = table.pack(...)
+    local result, done = nil, false
+    task.spawn(function()
+        if remote:IsA("RemoteFunction") then
+            result = table.pack(pcall(function() return remote:InvokeServer(table.unpack(args, 1, args.n)) end))
+        elseif remote:IsA("RemoteEvent") then
+            result = table.pack(pcall(function() remote:FireServer(table.unpack(args, 1, args.n)); return true end))
+        else result = table.pack(false) end
+        done = true
+    end)
+    H.waitFor(8, 0.05, function() return done == true end)
+    if not done or result[1] ~= true then return nil end
+    return result[2], result[3]
+end
+function H.netCall(remote, ...)
+    if typeof(remote) == "Instance" and remote:IsA("RemoteEvent") then
+        return pcall(function(...) remote:FireServer(...) end, ...)
+    end
+    return H.netInvoke(remote, ...)
+end
+function H.countTable(value)
+    if typeof(value) ~= "table" then return 0 end
+    local count = 0
+    for _ in pairs(value) do count = count + 1 end
+    return count
+end
+function H.formatNumber(value)
+    local number = tonumber(value) or 0
+    local suffixes = { "", "K", "M", "B", "T", "Qa", "Qi" }
+    local suffixIndex = 1
+    for _ = 1, 6 do
+        if number >= 1000 then number = number / 1000; suffixIndex = suffixIndex + 1 end
+    end
+    if suffixIndex == 1 then return string.format("%d", number) end
+    return string.format("%.2f%s", number, suffixes[suffixIndex])
+end
+function H.formatElapsed(seconds)
+    local total = math.max(0, math.floor(seconds))
+    local hours = math.floor(total / 3600)
+    local minutes = math.floor((total % 3600) / 60)
+    if hours > 0 then return string.format("%dh %dm", hours, minutes) end
+    return string.format("%dm", minutes)
+end
+function H.resolveRarity(assetCategory)
+    if typeof(assetCategory) ~= "string" or not AssetsData or typeof(AssetsData.Directory) ~= "table" then return nil end
+    local directoryEntry = AssetsData.Directory[assetCategory]
+    local rarity = directoryEntry and directoryEntry.Rarity
+    if not rarity then return nil end
+    return rarity._id or rarity.DisplayName
+end
+function H.assetName(assetCategory)
+    if AssetsData and typeof(AssetsData.Directory) == "table" then
+        local entry = AssetsData.Directory[assetCategory or ""]
+        if entry and entry.DisplayName then return entry.DisplayName end
+    end
+    return tostring(assetCategory or "Unknown")
+end
+function H.recordMutations(asset)
+    local mutations = {}
+    if typeof(asset) ~= "table" then return mutations end
+    if typeof(asset.Mutations) == "table" then
+        for _, mutation in pairs(asset.Mutations) do
+            if typeof(mutation) == "string" then table.insert(mutations, mutation) end
+        end
+    end
+    if typeof(asset.BaseMutation) == "string" then table.insert(mutations, asset.BaseMutation) end
+    return mutations
+end
+
+-- ============ LANE / AREA HELPERS ============
+local AreasFolder = Workspace:FindFirstChild("__OBJECTS") and Workspace.__OBJECTS:FindFirstChild("Areas")
+if not AreasFolder then
+    local objects = Workspace:WaitForChild("__OBJECTS", 8)
+    AreasFolder = objects and objects:WaitForChild("Areas", 8)
+end
+local GuardAreasFolder = AreasFolder and AreasFolder:FindFirstChild("GuardAreas")
+if AreasFolder and not GuardAreasFolder then GuardAreasFolder = AreasFolder:WaitForChild("GuardAreas", 6) end
+
+local AreaEggSlotsClient = Workspace:FindFirstChild("AreaEggSlotsClient")
+if not AreaEggSlotsClient then AreaEggSlotsClient = Workspace:WaitForChild("AreaEggSlotsClient", 10) end
+
+local EspFolder = Instance.new("Folder")
+EspFolder.Name = "ZenApexEsp"
+EspFolder.Parent = Workspace
+
+-- Visual Pet Folder
+local VisualPetFolder = Instance.new("Folder")
+VisualPetFolder.Name = "ZenApexVisualPets"
+VisualPetFolder.Parent = Workspace
+
+function H.getLaneZ()
+    if AreasFolder then
+        local gameplayZ = AreasFolder:FindFirstChild("GameplayZ")
+        if gameplayZ and gameplayZ:IsA("BasePart") then return gameplayZ.Position.Z end
+        local separationLine = AreasFolder:FindFirstChild("SeparationLine")
+        if separationLine and separationLine:IsA("BasePart") then return separationLine.Position.Z end
+    end
+    return -365.5
+end
+function H.getLaneY()
+    if AreasFolder then
+        local gameplayZ = AreasFolder:FindFirstChild("GameplayZ")
+        if gameplayZ and gameplayZ:IsA("BasePart") then return gameplayZ.Position.Y + 3 end
+    end
+    local root = H.getRoot()
+    return root and root.Position.Y or 70
+end
+function H.getEntryPosition()
+    if AreasFolder then
+        local startArea = AreasFolder:FindFirstChild("StartArea")
+        if startArea and startArea:IsA("BasePart") then return Vector3.new(startArea.Position.X, H.getLaneY(), H.getLaneZ()) end
+        local separationLine = AreasFolder:FindFirstChild("SeparationLine")
+        if separationLine and separationLine:IsA("BasePart") then return Vector3.new(separationLine.Position.X, H.getLaneY(), H.getLaneZ()) end
+    end
+    return Vector3.new(543.5, H.getLaneY(), H.getLaneZ())
+end
+function H.getZoneModel(zoneName) return GuardAreasFolder and GuardAreasFolder:FindFirstChild(zoneName) end
+function H.getZoneLaneCenter(zoneName)
+    local zone = H.getZoneModel(zoneName)
+    if not zone then return nil end
+    local bounds = zone:FindFirstChild("Bounds")
+    if bounds and bounds:IsA("BasePart") then return Vector3.new(bounds.Position.X, H.getLaneY(), H.getLaneZ()) end
+    local ok, pivot = pcall(function() return zone:GetBoundingBox() end)
+    if ok and pivot then return Vector3.new(pivot.Position.X, H.getLaneY(), H.getLaneZ()) end
+    return nil
+end
+function H.stripCheatMovers(root)
+    if not root then return end
+    for _, inst in ipairs(root:GetChildren()) do
+        local className = inst.ClassName
+        if className == "BodyVelocity" or className == "BodyPosition" or className == "BodyGyro" or className == "BodyAngularVelocity" or className == "LinearVelocity" or className == "VectorForce" or className == "AlignOrientation" then
+            pcall(function() inst:Destroy() end)
+        end
+    end
+end
+function H.stopSoftMove(root)
+    if not root then return end
+    for _, inst in ipairs(root:GetChildren()) do
+        if inst:IsA("AlignPosition") then pcall(function() inst.Enabled = false; inst:Destroy() end) end
+    end
+end
+function H.placeRoot(root, cf)
+    if not root or not cf then return end
+    H.stopSoftMove(root); H.stripCheatMovers(root)
+    local character = LocalPlayer.Character
+    if character and character.Parent then pcall(function() character:PivotTo(cf) end)
+    else root.CFrame = cf end
+end
+
+-- ============ GROUND Y (chống xuyên đất) ============
+function H.groundedY(x, z, fallbackY)
+    local laneY = H.getLaneY()
+    local root = H.getRoot()
+    local humanoid = H.getHumanoid()
+    local hipHeight = 2
+    if humanoid and humanoid.HipHeight > 0 then hipHeight = humanoid.HipHeight end
+    local rootHalfHeight = root and root.Size.Y * 0.5 or 1
+    local characterOffset = hipHeight + rootHalfHeight
+    local groundThreshold = laneY + 1.5
+    local excluded = {}
+    if LocalPlayer.Character then table.insert(excluded, LocalPlayer.Character) end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local originY = laneY + 40
+    local hitY = nil
+    for _ = 1, 20 do
+        params.FilterDescendantsInstances = excluded
+        local hit = Workspace:Raycast(Vector3.new(x, originY, z), Vector3.new(0, -160, 0), params)
+        if not hit then break end
+        local y = hit.Position.Y
+        local name = hit.Instance.Name
+        local looksLikeGround = name == "Ground" or string.find(string.lower(name), "ground", 1, true) ~= nil
+        if looksLikeGround or y <= groundThreshold then hitY = y; break end
+        table.insert(excluded, hit.Instance)
+    end
+    if hitY then return math.clamp(hitY + characterOffset, laneY - 2, laneY + 5) end
+    if typeof(fallbackY) == "number" then return math.clamp(fallbackY, laneY - 2, laneY + 5) end
+    return laneY + 3
+end
+
+-- ============ ANTI-CHEAT HUMANOID (Clone để tránh speed governor) ============
+local HUM_COPY = {
+    "RigType", "HipHeight", "JumpPower", "JumpHeight", "UseJumpPower",
+    "AutoRotate", "MaxSlopeAngle", "DisplayDistanceType",
+    "NameDisplayDistance", "HealthDisplayDistance", "AutomaticScalingEnabled",
+    "BreakJointsOnDeath", "RequiresNeck", "EvaluateStateMachine"
+}
+
+function H.createBypassHumanoid()
+    local Character = LocalPlayer.Character
+    if not Character then return false end
+    local oldHum = Character:FindFirstChildWhichIsA("Humanoid")
+    if not oldHum then return false end
+
+    local data = {}
+    for _, key in ipairs(HUM_COPY) do
+        local ok, result = pcall(function() return oldHum[key] end)
+        if ok then data[key] = result end
+    end
+    local walkSpeed = oldHum.WalkSpeed
+    local cam = Workspace.CurrentCamera
+    local camCFrame = cam and cam.CFrame
+
+    pcall(function() oldHum:Destroy() end)
+    RunService.Heartbeat:Wait()
+
+    local newHum = Instance.new("Humanoid")
+    for key, value in pairs(data) do
+        pcall(function() newHum[key] = value end)
+    end
+    newHum.Parent = Character
+    RunService.Heartbeat:Wait()
+
+    if Character ~= newHum.Parent then return false end
+    newHum.WalkSpeed = walkSpeed
+    pcall(function() newHum:ChangeState(Enum.HumanoidStateType.Landed) end)
+
+    if cam then
+        pcall(function()
+            cam.CameraSubject = newHum
+            if camCFrame then cam.CFrame = camCFrame end
+        end)
+    end
+    return true
+end
+
+-- ============ SWAP STEAL HUMANOID ============
+function H.swapStealHumanoid()
+    local character = LocalPlayer.Character
+    if not character then return false end
+    for _, descendant in ipairs(character:GetDescendants()) do
+        if descendant:IsA("LocalScript") and string.find(descendant.Name, "PushBack") then
+            pcall(function() descendant.Disabled = true; descendant:Destroy() end)
+        end
+    end
+    return true
+end
+function H.prepareStealHumanoid()
+    local character = LocalPlayer.Character
+    if not character then return nil end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return nil end
+    local camera = Workspace.CurrentCamera
+    local cameraCFrame = camera and camera.CFrame or nil
+    local newHumanoid
+    local ok, clone = pcall(function() humanoid.Archivable = true; return humanoid:Clone() end)
+    if ok and clone then
+        newHumanoid = clone
+        newHumanoid.Parent = character
+        pcall(function() humanoid:Destroy() end)
+    else newHumanoid = humanoid end
+    task.wait(0.1)
+    newHumanoid = character:FindFirstChildOfClass("Humanoid") or newHumanoid
+    if newHumanoid then
+        newHumanoid.Sit = false
+        newHumanoid.PlatformStand = false
+        newHumanoid.WalkSpeed = Config.StealSpeed
+        newHumanoid.AutoRotate = true
+    end
+    if camera and newHumanoid then
+        pcall(function()
+            camera.CameraSubject = newHumanoid
+            if cameraCFrame then camera.CFrame = cameraCFrame end
+        end)
+    end
+    return newHumanoid
+end
+
+-- ============ PATH BUILD ============
+function H.buildStealPath(startPosition, targetPosition)
+    local laneZ, laneY = H.getLaneZ(), H.getLaneY()
+    local waypoints = {}
+    if math.abs(startPosition.Z - laneZ) > 3 then table.insert(waypoints, Vector3.new(startPosition.X, laneY, laneZ)) end
+    if math.abs(startPosition.X - targetPosition.X) > 2 then table.insert(waypoints, Vector3.new(targetPosition.X, laneY, laneZ)) end
+    table.insert(waypoints, Vector3.new(targetPosition.X, laneY, targetPosition.Z))
+    return waypoints
+end
+
+-- ============ HUMANOID STEAL MOVE ============
+function H.humanoidStealMoveTo(position, keepGoing)
+    if typeof(position) ~= "Vector3" or not running then return false end
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = H.getRoot()
+    if not humanoid or not root then return false end
+    humanoid.Sit = false; humanoid.PlatformStand = false; humanoid.AutoRotate = true
+    humanoid.WalkSpeed = Config.StealSpeed
+    local targetY = H.groundedY(position.X, position.Z, root.Position.Y)
+    local dest = Vector3.new(position.X, targetY, position.Z)
+    if (root.Position - dest).Magnitude <= Config.ArriveDistance then return true end
+    local route = H.buildStealPath(root.Position, dest)
+    if #route == 0 then route = { dest } end
+    for _, point in ipairs(route) do
+        if not running or (keepGoing and not keepGoing()) then return false end
+        root = H.getRoot(); if not root then return false end
+        local pointY = H.groundedY(point.X, point.Z, root.Position.Y)
+        local waypoint = Vector3.new(point.X, pointY, point.Z)
+        while running do
+            if keepGoing and not keepGoing() then return false end
+            root = H.getRoot(); if not root then return false end
+            local offset = waypoint - root.Position
+            local distance = offset.Magnitude
+            if distance <= Config.ArriveDistance then break end
+            local direction = offset.Unit
+            local dt = math.clamp(RunService.Heartbeat:Wait(), 0, 1 / 30)
+            local step = math.min(Config.StealSpeed * dt, distance)
+            local nextPos = root.Position + direction * step
+            local flatDir = Vector3.new(direction.X, 0, direction.Z)
+            if flatDir.Magnitude > 0.001 then root.CFrame = CFrame.lookAt(nextPos, nextPos + flatDir.Unit)
+            else root.CFrame = CFrame.new(nextPos) end
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end
+    end
+    root = H.getRoot(); if not root then return false end
+    root.CFrame = CFrame.new(dest)
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    return (root.Position - dest).Magnitude <= math.max(3, Config.ArriveDistance + 1)
+end
+function H.stealMoveTo(targetX, targetZ, keepGoing)
+    local root = H.getRoot(); if not root then return false end
+    local y = H.groundedY(targetX, targetZ, root.Position.Y)
+    return H.humanoidStealMoveTo(Vector3.new(targetX, y, targetZ), keepGoing)
+end
+function H.stealAlong(waypoints, keepGoing)
+    for _, waypoint in ipairs(waypoints) do
+        if keepGoing and not keepGoing() then return false end
+        if not H.stealMoveTo(waypoint.X, waypoint.Z, keepGoing) then return false end
+    end
+    return true
+end
+
+-- ============ TP WALK (Teleport từng bước - nhanh hơn) ============
+function H.tpWalkTo(targetPos, arriveDist, keepGoing)
+    if typeof(targetPos) ~= "Vector3" then return false end
+    arriveDist = arriveDist or 8
+    local deadline = tick() + 30
+    while running and tick() < deadline do
+        if keepGoing and not keepGoing() then return false end
+        local root = H.getRoot()
+        local humanoid = H.getHumanoid()
+        if not root or not humanoid or humanoid.Health <= 0 then return false end
+
+        local curPos = root.Position
+        local dx = targetPos.X - curPos.X
+        local dz = targetPos.Z - curPos.Z
+        local remaining = math.sqrt(dx * dx + dz * dz)
+        if remaining <= arriveDist then return true end
+
+        local step = math.min(remaining, Config.TP_STEP)
+        local invMag = 1 / remaining
+        local nx = curPos.X + dx * invMag * step
+        local nz = curPos.Z + dz * invMag * step
+        local sumNumber = 2
+        local ny = (H.groundedY(nx, nz, curPos.Y - sumNumber) or curPos.Y - sumNumber) + sumNumber
+        local rot = CFrame.lookAt(Vector3.zero, Vector3.new(dx * invMag, 0, dz * invMag)).Rotation
+
+        pcall(function()
+            root.CFrame = CFrame.new(nx, ny, nz) * rot
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end)
+        task.wait(Config.TP_WAIT)
+    end
+    return false
+end
+
+-- ============ BYPASS MOVE (BodyVelocity) ============
+function H.bypassMoveTo(position, keepGoing, speed)
+    if typeof(position) ~= "Vector3" or not running then return false end
+    speed = tonumber(speed) or Config.BypassSpeed
+    local root = H.getRoot(); if not root then return false end
+    H.stripCheatMovers(root); H.stopSoftMove(root)
+    local humanoid = H.getHumanoid()
+    if humanoid then humanoid.Sit = false; humanoid.PlatformStand = true end
+    local targetY = H.groundedY(position.X, position.Z, root.Position.Y)
+    local dest = Vector3.new(position.X, targetY, position.Z)
+    if (root.Position - dest).Magnitude <= Config.BaseReturnArrive then
+        if humanoid then humanoid.PlatformStand = false end
+        return true
+    end
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = "ZenApexBypassMove"; bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bv.P = 1250; bv.Velocity = Vector3.zero; bv.Parent = root
+    local bg = Instance.new("BodyGyro")
+    bg.Name = "ZenApexBypassGyro"; bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    bg.P = 3000; bg.D = 50; bg.CFrame = root.CFrame; bg.Parent = root
+    local arrived, deadline = false, os.clock() + 15
+    while running and os.clock() < deadline do
+        if keepGoing and not keepGoing() then break end
+        root = H.getRoot(); if not root then break end
+        local offset = dest - root.Position
+        local dist = offset.Magnitude
+        if dist <= Config.BaseReturnArrive then arrived = true; break end
+        local dir = offset.Unit
+        bv.Velocity = dir * speed
+        local flatDir = Vector3.new(dir.X, 0, dir.Z)
+        if flatDir.Magnitude > 0.001 then bg.CFrame = CFrame.lookAt(root.Position, root.Position + flatDir.Unit) end
+        RunService.Heartbeat:Wait()
+    end
+    if bv and bv.Parent then bv:Destroy() end
+    if bg and bg.Parent then bg:Destroy() end
+    root = H.getRoot()
+    if root then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        if arrived then H.placeRoot(root, CFrame.new(dest.X, targetY, dest.Z)) end
+    end
+    humanoid = H.getHumanoid()
+    if humanoid then humanoid.PlatformStand = false end
+    return arrived
+end
+
+function H.holdAtPosition(seconds, keepGoing)
+    seconds = tonumber(seconds) or 3
+    local root = H.getRoot(); if not root then return false end
+    local anchorCF = root.CFrame
+    local deadline = os.clock() + seconds
+    while running and os.clock() < deadline do
+        if keepGoing and not keepGoing() then return false end
+        root = H.getRoot()
+        if root then
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+            root.CFrame = anchorCF
+        end
+        RunService.Heartbeat:Wait()
+    end
+    return true
+end
+
+-- ============ BASE / PLOT ============
+function H.getBasePosition()
+    if PlotApi.GetRespawnPointCFrame then
+        local respawn = PlotApi.GetRespawnPointCFrame()
+        if respawn then return respawn.Position end
+    end
+    if not PlotApi.GetPlotData then return nil end
+    local plot = PlotApi.GetPlotData()
+    if not plot then return nil end
+    if plot.CenterPoint then return plot.CenterPoint.Position end
+    if plot.PetArea then return plot.PetArea.Position end
+    return nil
+end
+functi-- ============ PART 3/5: FEATURES CHÍNH ============
+-- Place / Hatch / Sell / Fuse / Upgrade / ESP / ServerHop / Webhook / Performance
+
+-- ============ PLACE EGG ============
+function H.getUnplacedEggUids()
+    local save = H.getSave()
+    local eggInventory = save and save.EggInventory
+    local result = {}
+    if typeof(eggInventory) ~= "table" then return result end
+    local bypass = H.isOn("AutoPlaceAll") and not H.isOn("AutoPlaceSelected")
+    for uid, egg in pairs(eggInventory) do
+        if typeof(uid) == "string" and typeof(egg) == "table" and egg.Placement == nil
+            and (bypass or H.matchesEggFilters(egg, nil, "LifecycleRarities", "LifecycleMutations")) then
+            table.insert(result, uid)
+        end
+    end
+    return result
+end
+function H.placingEnabled() return H.isOn("AutoPlaceSelected") or H.isOn("AutoPlaceAll") end
+function H.isPlotFull() return os.clock() < PlotFullUntil end
+function H.markPlotFull() PlotFullUntil = os.clock() + 30 end
+function H.getPlacementLocalCFrames()
+    if not PlotApi.GetPlotData then return {} end
+    local plot = PlotApi.GetPlotData()
+    if not plot or not plot.PetArea or not plot.CenterPoint then return {} end
+    local petArea, centerPoint = plot.PetArea, plot.CenterPoint
+    local size = petArea.Size
+    local placements = {}
+    for x = -size.X * 0.5 + 5, size.X * 0.5 - 5, 7 do
+        for z = -size.Z * 0.5 + 5, size.Z * 0.5 - 5, 7 do
+            local worldPoint = petArea.CFrame:PointToWorldSpace(Vector3.new(x, 1, z))
+            table.insert(placements, centerPoint.CFrame:ToObjectSpace(CFrame.new(worldPoint)))
+        end
+    end
+    return placements
+end
+function H.canAutoPlace()
+    return H.placingEnabled() and not IsCarryingEgg and not H.isPlotFull() and #H.getUnplacedEggUids() > 0
+end
+function H.runAutoPlaceEggs(forceRun)
+    if IsCarryingEgg or not EggApi.RequestPlaceEgg then return end
+    local function canContinue() return (forceRun == true or H.placingEnabled()) and not IsCarryingEgg end
+    local unplaced = H.getUnplacedEggUids()
+    if #unplaced == 0 or not H.ensureAtPlot(canContinue) then return end
+    local placements = H.getPlacementLocalCFrames()
+    if #placements == 0 then return end
+    local placedAny = false
+    for _, uid in ipairs(unplaced) do
+        if not running or not canContinue() then return placedAny end
+        if not H.isNearPlot() and not H.ensureAtPlot(canContinue) then return placedAny end
+        if EggApi.RequestEquipTool then pcall(EggApi.RequestEquipTool, uid) end
+        task.wait(0.15)
+        local placedThisEgg = false
+        for offset = 0, #placements - 1 do
+            local placementIndex = (NextPlacementIndex + offset - 1) % #placements + 1
+            local success = false
+            pcall(function() success = EggApi.RequestPlaceEgg(uid, placements[placementIndex]) == true end)
+            if success then
+                NextPlacementIndex = placementIndex + 1
+                placedThisEgg = true; placedAny = true
+                task.wait(0.25); break
+            end
+        end
+        if not placedThisEgg then H.markPlotFull(); return placedAny end
+        PlotFullUntil = 0
+    end
+    return placedAny
+end
+
+-- ============ HATCH ============
+function H.canAutoHatch() return H.isOn("AutoOpenReadyEggs") and not IsCarryingEgg end
+function H.runAutoOpenReadyEggs()
+    local save = H.getSave()
+    local eggInventory = save and save.EggInventory
+    if typeof(eggInventory) ~= "table" then return end
+    local hatchedAny = false
+    for uid, egg in pairs(eggInventory) do
+        if not running or not H.isOn("AutoOpenReadyEggs") then return hatchedAny end
+        if typeof(uid) == "string" and typeof(egg) == "table" and egg.Placement ~= nil
+            and H.matchesEggFilters(egg, nil, "LifecycleRarities", "LifecycleMutations") then
+            local ready = false
+            if EggApi.IsLocalEggReady then pcall(function() ready = EggApi.IsLocalEggReady(uid) == true end) end
+            if ready and EggApi.RequestHatchEgg then
+                local hatchStarted = false
+                pcall(function() hatchStarted = EggApi.RequestHatchEgg(uid) == true end)
+                if hatchStarted then
+                    hatchedAny = true
+                    if EggApi.RequestCompleteHatchEgg then pcall(EggApi.RequestCompleteHatchEgg, uid) end
+                    task.wait(0.35)
+                end
+            end
+        end
+    end
+    return hatchedAny
+end
+
+-- ============ SELL / FUSE ============
+function H.getPetItemData(serializedPet)
+    if not AssetItemsApi.Deserialize then return nil end
+    local ok, itemData = pcall(AssetItemsApi.Deserialize, serializedPet)
+    if not ok or typeof(itemData) ~= "table" then return nil end
+    return itemData
+end
+function H.findToolByUid(uid)
+    local containers = { LocalPlayer.Character, LocalPlayer:FindFirstChildOfClass("Backpack") }
+    for _, container in ipairs(containers) do
+        if container then
+            for _, child in ipairs(container:GetChildren()) do
+                if child:IsA("Tool") and child:GetAttribute("UID") == uid then return child end
+            end
+        end
+    end
+    return nil
+end
+function H.holdUid(uid)
+    local character = LocalPlayer.Character
+    local humanoid = H.getHumanoid()
+    if not character or not humanoid then return false end
+    local tool = H.findToolByUid(uid)
+    if not tool then return false end
+    if tool.Parent == character then return true end
+    pcall(function() humanoid:EquipTool(tool) end)
+    return H.waitFor(1, 0.05, function() return tool.Parent == LocalPlayer.Character end)
+end
+function H.sellUid(uid)
+    if not H.holdUid(uid) then return false end
+    H.netCall(Remotes.AssetInventory.SELL_ASSET, uid)
+    return H.waitFor(2, 0.1, function()
+        local save = H.getSave(); if not save then return false end
+        local inventory = save.Inventory or {}
+        local eggInventory = save.EggInventory or {}
+        return inventory[uid] == nil and eggInventory[uid] == nil
+    end)
+end
+function H.getSellablePets()
+    local save = H.getSave()
+    local inventory = save and save.Inventory
+    local result = {}
+    if typeof(inventory) ~= "table" then return result end
+    local equipped = save.EquippedAssets or {}
+    local maxScale = tonumber(H.optionValue("SellMaxScale", 10)) or 10
+    local keepMutated = H.isOn("SellKeepMutated")
+    local keepEquipped = H.isOn("SellKeepEquipped")
+    local selectedMutations = H.multiSelected("SellMutations")
+    local filterMutations = H.multiHasAny("SellMutations")
+    local selectedRarities = H.multiSelected("SellRarities")
+    local filterRarities = H.multiHasAny("SellRarities")
+    for uid, asset in pairs(inventory) do
+        if typeof(uid) == "string" and typeof(asset) == "table" then
+            local itemData = H.getPetItemData(asset)
+            local isEquipped = table.find(equipped, uid) ~= nil
+            local protected = not itemData or itemData.IsFavorite == true or itemData.InFuse == true or (keepEquipped and isEquipped)
+            if not protected then
+                local mutations = H.recordMutations(asset)
+                local mutationAllowed = not (keepMutated and #mutations > 0)
+                if mutationAllowed and filterMutations then
+                    mutationAllowed = false
+                    for _, mutation in ipairs(mutations) do
+                        if selectedMutations[mutation] then mutationAllowed = true; break end
+                    end
+                end
+                local scale = tonumber(asset.Scale) or 0
+                local rarity = H.resolveRarity(asset.Category)
+                local rarityAllowed = not filterRarities or (typeof(rarity) == "string" and selectedRarities[rarity] == true)
+                if mutationAllowed and scale <= maxScale and rarityAllowed then table.insert(result, uid) end
+            end
+        end
+    end
+    return result
+end
+function H.runAutoSellPets()
+    for _, uid in ipairs(H.getSellablePets()) do
+        if not running or not H.isOn("AutoSellPets") or IsCarryingEgg then return end
+        H.sellUid(uid); task.wait(0.15)
+    end
+end
+function H.getSellableEggUids()
+    local save = H.getSave()
+    local eggInventory = save and save.EggInventory
+    local result = {}
+    if typeof(eggInventory) ~= "table" then return result end
+    local useRarityFilter = H.multiHasAny("SellEggRarities")
+    local selectedRarities = H.multiSelected("SellEggRarities")
+    for uid, egg in pairs(eggInventory) do
+        if typeof(uid) == "string" and typeof(egg) == "table" and egg.Placement == nil then
+            local rarity = H.resolveRarity(egg.AssetCategory)
+            if not useRarityFilter or (typeof(rarity) == "string" and selectedRarities[rarity] == true) then
+                table.insert(result, uid)
+            end
+        end
+    end
+    return result
+end
+function H.runAutoSellEggs()
+    for _, uid in ipairs(H.getSellableEggUids()) do
+        if not running or not H.isOn("AutoSellEggs") or IsCarryingEgg then return end
+        if EggApi.RequestEquipTool then pcall(EggApi.RequestEquipTool, uid) end
+        task.wait(0.15)
+        H.sellUid(uid); task.wait(0.15)
+    end
+end
+function H.fuseGroups(save)
+    local inventory = save and save.Inventory
+    local groups = {}
+    if typeof(inventory) ~= "table" then return groups end
+    local equipped = save.EquippedAssets or {}
+    local keepEquipped = H.isOn("FuseKeepEquipped")
+    local keepMutated = H.isOn("FuseKeepMutated")
+    local maxScale = tonumber(H.optionValue("FuseMaxScale", 10)) or 10
+    local filterMutations = H.multiHasAny("FuseMutations")
+    local selectedMutations = H.multiSelected("FuseMutations")
+    for uid, pet in pairs(inventory) do
+        if typeof(uid) == "string" and typeof(pet) == "table" then
+            local category = pet.Category
+            local selectable = false
+            if typeof(category) == "string" and FuseApi.CanSelectPet then
+                pcall(function() selectable = FuseApi.CanSelectPet(uid, pet, category, false) == true end)
+            end
+            if selectable and not (keepEquipped and table.find(equipped, uid) ~= nil) then
+                local mutations = H.recordMutations(pet)
+                local mutationAllowed = not (keepMutated and #mutations > 0)
+                if mutationAllowed and filterMutations then
+                    mutationAllowed = false
+                    for _, mutation in ipairs(mutations) do
+                        if selectedMutations[mutation] then mutationAllowed = true; break end
+                    end
+                end
+                local rarity = H.resolveRarity(category)
+                local scale = tonumber(pet.Scale) or 0
+                local rarityAllowed = rarity == nil or H.selectionAllows("FuseRarities", rarity)
+                if mutationAllowed and scale <= maxScale and rarityAllowed then
+                    groups[category] = groups[category] or {}
+                    table.insert(groups[category], { uid = uid, scale = scale })
+                end
+            end
+        end
+    end
+    return groups
+end
+function H.pickFuseGroup(save)
+    local groups = H.fuseGroups(save)
+    local keepPerCategory = math.floor(tonumber(H.optionValue("FuseKeepPerCategory", 0)) or 0)
+    local targetMode = H.optionValue("FuseTarget", "Highest Rarity")
+    local selectedCategory, selectedScore = nil, -math.huge
+    for category, pets in pairs(groups) do
+        table.sort(pets, function(a, b) return a.scale < b.scale end)
+        if #pets - keepPerCategory >= 3 then
+            local rarityScore = RarityWeight[H.resolveRarity(category) or "Common"] or 0
+            local score = rarityScore
+            if targetMode == "Most Duplicates" then score = #pets
+            elseif targetMode == "Lowest Rarity" then score = -rarityScore end
+            if score > selectedScore then selectedCategory = category; selectedScore = score end
+        end
+    end
+    if not selectedCategory then return nil end
+    local pets = groups[selectedCategory]
+    return { pets[1].uid, pets[2].uid, pets[3].uid }
+end
+function H.fusePrice(save, petUids)
+    local inventory = save and save.Inventory
+    if typeof(inventory) ~= "table" or not FuseApi.CalculateFusePrice then return nil end
+    local itemData = {}
+    for index, uid in ipairs(petUids) do
+        local pet = inventory[uid]
+        local decoded = pet and H.getPetItemData(pet)
+        if not decoded then return nil end
+        itemData[index] = decoded
+    end
+    local ok, price = pcall(FuseApi.CalculateFusePrice, itemData)
+    return ok and tonumber(price) or nil
+end
+function H.getFuseMachinePosition()
+    local objects = Workspace:FindFirstChild("__OBJECTS")
+    local machines = objects and objects:FindFirstChild("Machines")
+    local fuseMachine = machines and machines:FindFirstChild("FuseMachine")
+    if not fuseMachine then return nil end
+    local ok, pivot = pcall(function() return fuseMachine:GetPivot() end)
+    if not ok or not pivot then return nil end
+    return pivot.Position + Vector3.new(0, 4, 0)
+end
+function H.runAutoFusePets(forceRun)
+    local save = H.getSave(); if not save then return end
+    local function canContinue() return forceRun == true or H.isOn("AutoFusePets") end
+    if save.FusionLocked == true then
+        if H.isOn("FuseAutoReveal") or forceRun == true then H.netInvoke(Remotes.FuseMachine.COMPLETE_REVEAL) end
+        return
+    end
+    local petUids = H.pickFuseGroup(save)
+    if not petUids then return end
+    local price = H.fusePrice(save, petUids)
+    if price and (tonumber(save.Money) or 0) < price then return end
+    local fusePosition = H.getFuseMachinePosition()
+    if fusePosition and not H.bypassMoveTo(fusePosition, canContinue, Config.BypassSpeed) then return end
+    if save.FusionInfoAcknowledged ~= true then H.netInvoke(Remotes.FuseMachine.ACKNOWLEDGE_INFO) end
+    for _, uid in ipairs(petUids) do
+        if not running or not canContinue() then return end
+        H.netInvoke(Remotes.FuseMachine.INSERT_MOB, uid)
+        task.wait(0.2)
+    end
+    H.netInvoke(Remotes.FuseMachine.START_FUSE)
+    return true
+end
+
+-- ============ EQUIP / CLAIM / UPGRADE ============
+function H.runAutoEquipBest()
+    local now = Workspace:GetServerTimeNow()
+    if now - LastEquipBestAt < 5 then return end
+    LastEquipBestAt = now
+    H.netCall(Remotes.Backpack.EQUIP_BEST)
+end
+function H.runAutoClaimIndex() H.netCall(Remotes.Index.REQUEST_CLAIM_ALL) end
+function H.runClaimOfflineEarnings()
+    local summary = H.netInvoke(Remotes.OfflineAssets.GET_SUMMARY)
+    if typeof(summary) ~= "table" then return false end
+    if (tonumber(summary.ClaimableAmount) or 0) <= 0 then return false end
+    H.netCall(Remotes.OfflineAssets.REQUEST_REDEEM)
+    return true
+end
+function H.runAutoClaimGroupReward()
+    local save = H.getSave()
+    if save and save.ClaimedGroupReward == true then return false end
+    local isInGroup = false
+    pcall(function()
+        isInGroup = Constants and Constants.GROUP_ID and LocalPlayer:IsInGroupAsync(Constants.GROUP_ID) == true
+    end)
+    H.netInvoke(Remotes.GroupReward.CLAIM_REWARD, isInGroup)
+    return true
+end
+function H.runAutoUpgrades()
+    local selected = H.multiSelected("UpgradeTypes")
+    if not H.multiHasAny("UpgradeTypes") then selected = { Base = true, Treadmill = true } end
+    local save = H.getSave(); if not save then return false end
+    local upgraded = false
+    if selected.Base and BaseUpgradeModule and typeof(BaseUpgradeModule.IsNextTierAffordable) == "function" then
+        if BaseUpgradeModule.IsNextTierAffordable(save) then
+            H.netCall(Remotes.Plots.REQUEST_BASE_UPGRADE)
+            upgraded = true; task.wait(0.35)
+        end
+    end
+    if selected.Treadmill and TreadmillsData and typeof(TreadmillsData.GetByUpgradeLevel) == "function" then
+        local currentLevel = tonumber(save.TreadmillUpgradeLevel) or 0
+        local nextUpgrade = TreadmillsData.GetByUpgradeLevel(currentLevel + 1)
+        if nextUpgrade then
+            local price = tonumber(nextUpgrade.Price) or math.huge
+            if save.Money >= price then
+                H.netCall(Remotes.Treadmills.REQUEST_UPGRADE, nextUpgrade._id)
+                upgraded = true; task.wait(0.35)
+            end
+        end
+    end
+    return upgraded
+end
+
+-- ============ TREADMILL ============
+function H.getTreadmillStand()
+    if not PlotApi.GetPlotData then return nil end
+    local plot = PlotApi.GetPlotData()
+    local plotFolder = plot and plot.PlotFolder
+    local treadmill = plotFolder and plotFolder:FindFirstChild("TreadmillBottom")
+    if not treadmill or not treadmill:IsA("BasePart") then return nil end
+    return treadmill.Position + Vector3.new(0, 4, 0)
+end
+function H.isDoubleSpeedVisible()
+    local ok, visible = pcall(function()
+        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+        local elements = playerGui and playerGui:FindFirstChild("Elements")
+        local left = elements and elements:FindFirstChild("Left")
+        local tools = left and left:FindFirstChild("Tools")
+        local doubleSpeed = tools and tools:FindFirstChild("DoubleYourSpeed")
+        return doubleSpeed ~= nil and doubleSpeed.Visible == true
+    end)
+    return ok and visible == true
+end
+function H.dismountTreadmill()
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+        task.wait(0.05)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+    end)
+    local humanoid = H.getHumanoid()
+    if humanoid then humanoid.Jump = true; humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
+end
+function H.stopTreadmillTraining()
+    TreadmillTrainingActive = false
+    pcall(function() H.netInvoke(Remotes.Treadmills.REQUEST_UNEQUIP) end)
+    if H.isDoubleSpeedVisible() then
+        H.dismountTreadmill(); task.wait(0.1)
+        if H.isDoubleSpeedVisible() then H.dismountTreadmill() end
+    end
+end
+function H.canAutoTreadmill() return H.isOn("AutoTreadmill") and not IsCarryingEgg end
+function H.runAutoTreadmillTraining()
+    local treadmillPosition = H.getTreadmillStand()
+    if not treadmillPosition then return end
+    local root = H.getRoot(); if not root then return end
+    if (root.Position - treadmillPosition).Magnitude > 12 then
+        if not H.bypassMoveTo(treadmillPosition, nil, Config.BypassSpeed) then return end
+    end
+    H.netInvoke(Remotes.Treadmills.REQUEST_EQUIP_STATIC)
+    TreadmillTrainingActive = true
+    return true
+end
+
+-- ============ WAYPOINT ============
+local WaypointNames = { "Base", "Pet Area", "Treadmill", "Fuse Machine", "Lobby Entry" }
+for _, zoneName in ipairs(AREA_ORDER) do table.insert(WaypointNames, zoneName) end
+function H.resolveWaypoint(name)
+    if typeof(name) ~= "string" then return nil end
+    if name == "Base" then return H.getBasePosition()
+    elseif name == "Pet Area" then return H.getPetAreaStandPosition()
+    elseif name == "Treadmill" then return H.getTreadmillStand()
+    elseif name == "Fuse Machine" then return H.getFuseMachinePosition()
+    elseif name == "Lobby Entry" then return H.getEntryPosition() end
+    return H.getZoneLaneCenter(name)
+end
+
+-- ============ ESP ============
+function H.espDistanceLimit() return tonumber(H.optionValue("EspDistance", 2000)) or 2000 end
+function H.withinEspRange(position)
+    local root = H.getRoot()
+    return root ~= nil and (root.Position - position).Magnitude <= H.espDistanceLimit()
+end
+function H.espColorFor(rarity)
+    local weight = RarityWeight[rarity or ""] or 0
+    if weight >= 9 then return Color3.fromRGB(255, 120, 255)
+    elseif weight >= 7 then return Color3.fromRGB(255, 90, 90)
+    elseif weight >= 5 then return Color3.fromRGB(255, 190, 80)
+    elseif weight >= 3 then return Color3.fromRGB(110, 195, 255) end
+    return Color3.fromRGB(190, 200, 215)
+end
+function H.ensureEspEntry(id, color)
+    local existing = EspEntries[id]
+    if existing then return existing end
+    local anchor = Instance.new("Part")
+    anchor.Name = "Esp-- ============ PART 4/5: VISUAL PETS + MOVEMENT + SCHEDULER ============
+
+-- ============ VISUAL PETS (từ ZenHubX / ThanhDuy) ============
+local VisualPet = {
+    spawned = {},
+    orbitRadius = 4,
+    orbitSpeed = 0.8,
+    conn = nil,
+    petNames = {},
+    inputName = "",
+}
+
+function VisualPet.scanPetModels()
+    local seen = {}
+    local names = {}
+    local function handler(item)
+        if not item:IsA("Model") then return end
+        local lower = item.Name:lower()
+        if lower:find("humanoid") or lower:find("egg") then return end
+        local hasPart = item:FindFirstChildWhichIsA("BasePart") ~= nil
+        local parentName = item.Parent and item.Parent.Name:lower() or ""
+        if hasPart and (
+            parentName:find("pet") or parentName:find("pen") or
+            parentName:find("render") or parentName:find("slot") or
+            item:FindFirstChildWhichIsA("AnimationController")
+        ) and not seen[item.Name] then
+            seen[item.Name] = true
+            names[#names + 1] = item.Name
+        end
+    end
+    -- Quét qua pet folders
+    for _, child in ipairs(Workspace:GetChildren()) do
+        local lower = child.Name:lower()
+        if lower:find("pet") or lower:find("pen") then
+            for _, d in ipairs(child:GetDescendants()) do handler(d) end
+        end
+    end
+    -- Quét Plots
+    local Plots = Workspace:FindFirstChild("Plots")
+    if Plots then
+        for _, d in ipairs(Plots:GetDescendants()) do handler(d) end
+    end
+    table.sort(names)
+    VisualPet.petNames = names
+    return names
+end
+
+function VisualPet.findModel(name)
+    local searchLower = name:lower()
+    for _, child in ipairs(Workspace:GetChildren()) do
+        local lower = child.Name:lower()
+        if lower:find("pet") or lower:find("pen") then
+            for _, d in ipairs(child:GetDescendants()) do
+                if d:IsA("Model") and d.Name:lower():find(searchLower, 1, true) and d:FindFirstChildWhichIsA("BasePart") then
+                    return d
+                end
+            end
+        end
+    end
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if d:IsA("Model") and d.Name:lower():find(searchLower, 1, true)
+            and not d:IsDescendantOf(VisualPetFolder) and d:FindFirstChildWhichIsA("BasePart") then
+            return d
+        end
+    end
+    return nil
+end
+
+function VisualPet.spawn(name)
+    local original = VisualPet.findModel(name)
+    if not original then
+        if H.notify then H.notify("Visual Pets", "Không tìm thấy: " .. name, "Warning", 4) end
+        return
+    end
+    local clone = original:Clone()
+    for _, d in ipairs(clone:GetDescendants()) do
+        if d:IsA("Script") or d:IsA("LocalScript") or d:IsA("ModuleScript") then
+            d:Destroy()
+        end
+    end
+    for _, d in ipairs(clone:GetDescendants()) do
+        if d:IsA("BasePart") then
+            d.Anchored = true
+            d.CanCollide = false
+            d.CanTouch = false
+            d.CastShadow = false
+        end
+    end
+    clone.Name = "VP_" .. name
+    clone.Parent = VisualPetFolder
+    local angle = #VisualPet.spawned * (6.283185307179586 / math.max(1, #VisualPet.spawned + 1))
+    VisualPet.spawned[#VisualPet.spawned + 1] = { model = clone, angle = angle }
+    if H.notify then H.notify("Visual Pets", "Đã tạo: " .. name, "Success", 3) end
+end
+
+function VisualPet.removeLast()
+    if #VisualPet.spawned == 0 then return end
+    local entry = table.remove(VisualPet.spawned)
+    pcall(function() entry.model:Destroy() end)
+end
+
+function VisualPet.removeAll()
+    for _, entry in ipairs(VisualPet.spawned) do
+        pcall(function() entry.model:Destroy() end)
+    end
+    VisualPet.spawned = {}
+end
+
+function VisualPet.startLoop()
+    if VisualPet.conn then return end
+    VisualPet.conn = RunService.Heartbeat:Connect(function()
+        local root = H.getRoot()
+        if not root or #VisualPet.spawned == 0 then return end
+        local time = tick()
+        local basePos = root.Position + Vector3.new(0, 1, 0)
+        local total = #VisualPet.spawned
+        for i, entry in ipairs(VisualPet.spawned) do
+            local angle = (i - 1) * (6.283185307179586 / total) + time * VisualPet.orbitSpeed
+            local ox = math.cos(angle) * VisualPet.orbitRadius
+            local oz = math.sin(angle) * VisualPet.orbitRadius
+            local target = basePos + Vector3.new(ox, 0, oz)
+            if entry.model.PrimaryPart or entry.model:FindFirstChildWhichIsA("BasePart") then
+                pcall(function()
+                    entry.model:PivotTo(CFrame.new(target) * CFrame.Angles(0, angle + math.pi, 0))
+                end)
+            end
+        end
+    end)
+    H.track(VisualPet.conn)
+end
+
+-- ============ MOVEMENT OVERRIDES ============
+local Movement = {
+    WalkSpeedEnabled = false,
+    WalkSpeed = 32,
+    JumpPowerEnabled = false,
+    JumpPower = 50,
+    InfJump = false,
+    NoClip = false,
+    Fly = false,
+    FlySpeed = 60,
+    OriginalSpeed = 16,
+    OriginalJump = 50,
+}
+
+-- WalkSpeed/JumpPower loop
+H.track(RunService.Heartbeat:Connect(function()
+    if not running then return end
+    local hum = H.getHumanoid()
+    if not hum then return end
+    if Movement.WalkSpeedEnabled then
+        if hum.WalkSpeed ~= Movement.WalkSpeed then hum.WalkSpeed = Movement.WalkSpeed end
+    end
+    if Movement.JumpPowerEnabled then
+        hum.UseJumpPower = true
+        if hum.JumpPower ~= Movement.JumpPower then hum.JumpPower = Movement.JumpPower end
+    end
+end))
+
+-- Infinite Jump
+H.track(UserInputService.JumpRequest:Connect(function()
+    if not running then return end
+    if not Movement.InfJump then return end
+    local hum = H.getHumanoid()
+    if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+end))
+
+-- NoClip
+local NoClipConn = nil
+local function applyNoClip(inst)
+    if inst and inst:IsA("BasePart") then inst.CanCollide = false end
+end
+local function setNoClip(enabled)
+    if NoClipConn then pcall(function() NoClipConn:Disconnect() end); NoClipConn = nil end
+    local char = LocalPlayer.Character
+    if not enabled or not char then return end
+    for _, inst in ipairs(char:GetDescendants()) do applyNoClip(inst) end
+    NoClipConn = char.DescendantAdded:Connect(applyNoClip)
+    H.track(NoClipConn)
+end
+Movement._setNoClip = setNoClip
+
+-- Fly
+H.track(RunService.RenderStepped:Connect(function(dt)
+    if not running then return end
+    if not Movement.Fly then return end
+    local root = H.getRoot(); local hum = H.getHumanoid()
+    local cam = Workspace.CurrentCamera
+    if not root or not hum or not cam then return end
+    hum.PlatformStand = true
+    local dir = Vector3.zero
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir - Vector3.new(0, 1, 0) end
+    root.AssemblyLinearVelocity = Vector3.zero
+    if dir.Magnitude > 0 then
+        root.CFrame = root.CFrame + dir.Unit * Movement.FlySpeed * dt
+    end
+end))
+
+-- ============ ANTI-AFK / IDLE ============
+H.track(UserInputService.InputBegan:Connect(function() LastInputAt = tick() end))
+H.track(UserInputService.InputChanged:Connect(function(input)
+    local it = input.UserInputType
+    if it == Enum.UserInputType.MouseMovement or it == Enum.UserInputType.Gamepad1 then LastInputAt = tick() end
+end))
+
+-- Disable Idled connection nếu có
+pcall(function()
+    if not getconnections then return end
+    for _, c in ipairs(getconnections(LocalPlayer.Idled)) do
+        pcall(function() c:Disable() end)
+    end
+end)
+
+-- ============ CHARACTER RESPAWN ============
+H.track(LocalPlayer.CharacterAdded:Connect(function(char)
+    if not running then return end
+    task.delay(0.35, function()
+        if H.stealingEnabled() then H.swapStealHumanoid() end
+        if Movement.NoClip then setNoClip(true) end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            Movement.OriginalSpeed = hum.WalkSpeed
+            Movement.OriginalJump = hum.JumpPower
+        end
+    end)
+end))
+
+-- ============ SCHEDULER CHÍNH ============
+local SchedulerAt = {}
+local function schedulerDue(name, interval)
+    local now = os.clock()
+    if now < (SchedulerAt[name] or 0) then return false end
+    SchedulerAt[name] = now + interval
+    return true
+end
+
+local function runCarryJobs()
+    if AutomationBusy then return end
+    if H.isOn("AutoDropEgg") and IsCarryingEgg then
+        AutomationBusy = true; pcall(H.runAutoDropEgg); AutomationBusy = false; return
+    end
+    if H.isOn("AutoReturn") and IsCarryingEgg then
+        AutomationBusy = true; pcall(H.runAutoReturn); AutomationBusy = false
+    end
+end
+
+local function runPriorityJobs()
+    if AutomationBusy then return end
+    local order = H.priorityOrder()
+    if #order < 1 then return end
+    for _, jobName in ipairs(order) do
+        local job = AutomationJobs[jobName]
+        local ready = job and job.Ready()
+        if ready then
+            local lastRun = AutomationLastRunAt[jobName] or 0
+            ready = os.clock() - lastRun >= job.Interval
+        end
+        if ready then
+            AutomationLastRunAt[jobName] = os.clock()
+            if jobName ~= "Auto Treadmill" and (TreadmillTrainingActive or H.isDoubleSpeedVisible()) then
+                pcall(H.stopTreadmillTraining)
+            end
+            AutomationBusy = true
+            local ok, didWork = pcall(job.Run)
+            AutomationBusy = false
+            if ok and didWork then return end
+        end
+    end
+end
+
+H.track(RunService.Heartbeat:Connect(function()
+    if not running then return end
+
+    if schedulerDue("core", 0.35) then
+        task.spawn(function()
+            if H.stealingEnabled() then H.swapStealHumanoid() end
+            runCarryJobs()
+            runPriorityJobs()
+        end)
+    end
+
+    if schedulerDue("dashboard", 2) then
+        if H.refreshDashboard then pcall(H.refreshDashboard) end
+        local noclipOn = Movement.NoClip
+        if noclipOn then setNoClip(true) else setNoClip(false) end
+        if TreadmillTrainingActive or H.isDoubleSpeedVisible() then
+            if not H.isOn("AutoTreadmill") then pcall(H.stopTreadmillTraining) end
+        end
+        if H.isOn("AntiGameplayPause") then H.applyAntiGameplayPause(true) end
+    end
+
+    if schedulerDue("esp", 1.25) then
+        local anyEsp = H.isOn("EspWorldEggs") or H.isOn("EspCarriedEggs") or H.isOn("EspGuards")
+            or H.isOn("EspPets") or H.isOn("EspPlayers") or H.isOn("EspMachines") or H.isOn("EspPlots")
+        if anyEsp then pcall(H.runEsp)
+        elseif next(EspEntries) ~= nil then pcall(H.clearAllEsp) end
+    end
+
+    if schedulerDue("pets", 5) then
+        if H.isOn("AutoEquipBest") and not AutomationBusy then pcall(H.runAutoEquipBest) end
+    end
+
+    if schedulerDue("fuse", tonumber(H.optionValue("FuseInterval", 8)) or 8) then
+        if H.isOn("AutoFusePets") and not AutomationBusy and not IsCarryingEgg then
+            AutomationBusy = true; pcall(H.runAutoFusePets); AutomationBusy = false
+        end
+    end
+
+    if schedulerDue("sellPets", tonumber(H.optionValue("SellInterval", 6)) or 6) then
+        if H.isOn("AutoSellPets") and not AutomationBusy and not IsCarryingEgg then pcall(H.runAutoSellPets) end
+    end
+
+    if schedulerDue("sellEggs", tonumber(H.optionValue("SellEggInterval", 8)) or 8) then
+        if H.isOn("AutoSellEggs") and not AutomationBusy and not IsCarryingEgg then
+            AutomationBusy = true; pcall(H.runAutoSellEggs); AutomationBusy = false
+        end
+    end
+
+    if schedulerDue("upgrades", 4) then
+        if H.isOn("AutoUpgrades") and not IsCarryingEgg then pcall(H.runAutoUpgrades) end
+    end
+
+    if schedulerDue("claims", 12) then
+        if H.isOn("AutoClaimIndex") then pcall(H.runAutoClaimIndex) end
+        if H.isOn("AutoClaimOffline") then pcall(H.runClaimOfflineEarnings) end
+        if H.isOn("AutoClaimGroupReward") then pcall(H.runAutoClaimGroupReward) end
+    end
+
+    if schedulerDue("hop", 3) then
+        if H.isOn("AutoServerHop") and not AutomationBusy then pcall(H.runServerHop) end
+    end
+
+    if schedulerDue("webhook", 5) then
+        if H.isOn("WebhookEnabled") then
+            pcall(H.trackWebhookEvents)
+            pcall(H.runWebhookSummary)
+        end
+    end
+
+    if schedulerDue("session", 4) then
+        if H.isOn("AntiAfk") then
+            local idleFor = tick() - LastInputAt
+            local sinceLastTap = tick() - LastAntiAfkAt
+            if (idleFor >= 300 and sinceLastTap >= 60) or (idleFor < 300 and sinceLastTap >= 300) then
+                pcall(function()
+                    local camera = Workspace.CurrentCamera
+                    if camera then
+                        VirtualUser:Button2Down(Vector2.new(0, 0), camera.CFrame)
+                        VirtualUser:Button2Up(Vector2.new(0, 0), camera.CFrame)
+                        LastAntiAfkAt = tick()
+                    end
+                end)
+            end
+        end
+    end
+end))
+
+-- ============ UNLOAD ============
+function H.unload()
+    if not running then return end
+    running = false
+    pcall(H.stopTreadmillTraining)
+    pcall(function() H.applyAntiGameplayPause(false) end)
+    pcall(function() H.applyRendering(false) end)
+    pcall(H.disableFpsBoost)
+    pcall(H.clearAllEsp)
+    pcall(VisualPet.removeAll)
+    if EspFolder then pcall(function() EspFolder:Destroy() end) end
+    if VisualPetFolder then pcall(function() VisualPetFolder:Destroy() end) end
+    for _, c in ipairs(conns) do
+        pcall(function() if typeof(c) == "RBXScriptConnection" then c:Disconnect() end end)
+    end
+    H.clearTable(conns)
+    for _, c in ipairs(UI.__connections) do
+        pcall(function() if typeof(c) == "RBXScriptConnection" then c:Disconnect() end end)
+    end
+    if H.destroyUI then pcall(H.destroyUI) end
+    genv.__ZEN_APEX_RUNNING = nil
+    genv.__ZEN_APEX_SHUTDOWN = nil
+end
+genv.__ZEN_APEX_SHUTDOWN = H.unload
+
+-- Expose cho UI
+H.VisualPet = VisualPet
+H.Movement = Movement
+H.SchedulerAt = SchedulerAt
+
+-- Kết thúc Part 4/5local COLORS = {
+    panelBg       = Color3.fromRGB(12, 12, 14),
+    panelBg2      = Color3.fromRGB(18, 18, 22),
+    panelBorder   = Color3.fromRGB(40, 40, 46),
+    panelBorderHi = Color3.fromRGB(90, 90, 100),
+    sidebarBg     = Color3.fromRGB(10, 10, 12),
+    sectionBg     = Color3.fromRGB(22, 22, 26),
+    sectionBorder = Color3.fromRGB(42, 42, 48),
+    text          = Color3.fromRGB(240, 240, 245),
+    textDim       = Color3.fromRGB(160, 160, 170),
+    textMuted     = Color3.fromRGB(105, 105, 115),
+    accent        = Color3.fromRGB(180, 30, 30),
+    accentHi      = Color3.fromRGB(230, 55, 55),
+    toggleOn      = Color3.fromRGB(200, 40, 40),
+    toggleOff     = Color3.fromRGB(45, 45, 52),
+    success       = Color3.fromRGB(90, 210, 130),
+    warning       = Color3.fromRGB(235, 175, 70),
+    error         = Color3.fromRGB(240, 90, 90),
+    info          = Color3.fromRGB(110, 170, 240),
+}
+local function getGuiParent()
+    if gethui then
+        local ok, parent = pcall(gethui)
+        if ok and parent then return parent end
+    end
+    return CoreGui
+end
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ZenApexHubGUI"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.DisplayOrder = 9999
+screenGui.Parent = getGuiParent()
+local toggleGui = Instance.new("ScreenGui")
+toggleGui.Name = "ZenApexHubToggle"
+toggleGui.ResetOnSpawn = false
+toggleGui.IgnoreGuiInset = true
+toggleGui.DisplayOrder = 9998
+toggleGui.Parent = getGuiParent()
+local toggleBtn = Instance.new("ImageButton")
+toggleBtn.Size = UDim2.fromOffset(56, 56)
+toggleBtn.Position = UDim2.new(0, 24, 0.4, 0)
+toggleBtn.BackgroundColor3 = COLORS.panelBg
+toggleBtn.BackgroundTransparency = 0.15
+toggleBtn.BorderSizePixel = 0
+toggleBtn.Image = TOGGLE_ICON
+toggleBtn.ImageColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.ScaleType = Enum.ScaleType.Fit
+toggleBtn.AutoButtonColor = false
+toggleBtn.Active = true
+toggleBtn.Parent = toggleGui
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(1, 0)
+local toggleStroke = Instance.new("UIStroke", toggleBtn)
+toggleStroke.Thickness = 1.5
+toggleStroke.Color = COLORS.panelBorderHi
+toggleStroke.Transparency = 0.3
+toggleStroke.Parent = toggleBtn
+local togglePad = Instance.new("UIPadding", toggleBtn)
+togglePad.PaddingTop = UDim.new(0, 8)
+togglePad.PaddingBottom = UDim.new(0, 8)
+togglePad.PaddingLeft = UDim.new(0, 8)
+togglePad.PaddingRight = UDim.new(0, 8)
+local PANEL_W, PANEL_H = 640, 440
+local panel = Instance.new("Frame")
+panel.Name = "Panel"
+panel.Size = UDim2.fromOffset(PANEL_W, PANEL_H)
+panel.Position = UDim2.new(0.5, -PANEL_W / 2, 0.5, -PANEL_H / 2)
+panel.BackgroundColor3 = COLORS.panelBg
+panel.BackgroundTransparency = 0.08
+panel.BorderSizePixel = 0
+panel.ClipsDescendants = true
+panel.Active = true
+panel.Draggable = false
+panel.Visible = false
+panel.Parent = screenGui
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 12)
+local panelStroke = Instance.new("UIStroke", panel)
+panelStroke.Thickness = 1.5
+panelStroke.Color = COLORS.panelBorder
+panelStroke.Transparency = 0.15
+panelStroke.Parent = panel
+local function addCorner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 6)
+    c.Parent = parent
+    return c
+end
+local function addStroke(parent, color, thickness)
+    local s = Instance.new("UIStroke")
+    s.Color = color or COLORS.panelBorder
+    s.Thickness = thickness or 1
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = parent
+    return s
+end
+local header = Instance.new("Frame", panel)
+header.Size = UDim2.new(1, 0, 0, 52)
+header.BackgroundColor3 = COLORS.panelBg2
+header.BackgroundTransparency = 0.05
+header.BorderSizePixel = 0
+addCorner(header, 12)
+local headerLine = Instance.new("Frame", header)
+headerLine.Size = UDim2.new(1, 0, 0, 1)
+headerLine.Position = UDim2.new(0, 0, 1, -1)
+headerLine.BackgroundColor3 = COLORS.panelBorder
+headerLine.BorderSizePixel = 0
+local title = Instance.new("TextLabel", header)
+title.Position = UDim2.fromOffset(20, 8)
+title.Size = UDim2.new(0, 300, 0, 22)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextSize = 18
+title.TextColor3 = COLORS.text
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = HEADER_TEXT
+local subtitle = Instance.new("TextLabel", header)
+subtitle.Position = UDim2.fromOffset(20, 30)
+subtitle.Size = UDim2.new(0, 400, 0, 16)
+subtitle.BackgroundTransparency = 1
+subtitle.Font = Enum.Font.Gotham
+subtitle.TextSize = 12
+subtitle.TextColor3 = COLORS.textDim
+subtitle.TextXAlignment = Enum.TextXAlignment.Left
+subtitle.Text = SUBTITLE
+local closeBtn = Instance.new("TextButton", header)
+closeBtn.Size = UDim2.fromOffset(28, 28)
+closeBtn.Position = UDim2.new(1, -38, 0, 12)
+closeBtn.BackgroundColor3 = Color3.fromRGB(50, 20, 20)
+closeBtn.BackgroundTransparency = 0.2
+closeBtn.BorderSizePixel = 0
+closeBtn.AutoButtonColor = false
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 14
+closeBtn.TextColor3 = COLORS.text
+closeBtn.Text = "X"
+addCorner(closeBtn, 6)
+addStroke(closeBtn, Color3.fromRGB(120, 40, 40), 1)
+closeBtn.MouseButton1Click:Connect(function() panel.Visible = false end)
+local SIDEBAR_W = 150
+local sidebar = Instance.new("Frame", panel)
+sidebar.Position = UDim2.fromOffset(0, 52)
+sidebar.Size = UDim2.new(0, SIDEBAR_W, 1, -52)
+sidebar.BackgroundColor3 = COLORS.sidebarBg
+sidebar.BackgroundTransparency = 0.1
+sidebar.BorderSizePixel = 0
+local sidebarScroll = Instance.new("ScrollingFrame", sidebar)
+sidebarScroll.BackgroundTransparency = 1
+sidebarScroll.BorderSizePixel = 0
+sidebarScroll.Size = UDim2.new(1, 0, 1, 0)
+sidebarScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+sidebarScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+sidebarScroll.ScrollBarThickness = 3
+sidebarScroll.ScrollBarImageColor3 = COLORS.accent
+local sidebarList = Instance.new("UIListLayout", sidebarScroll)
+sidebarList.Padding = UDim.new(0, 4)
+sidebarList.SortOrder = Enum.SortOrder.LayoutOrder
+local sidebarPad = Instance.new("UIPadding", sidebarScroll)
+sidebarPad.PaddingTop = UDim.new(0, 10)
+sidebarPad.PaddingLeft = UDim.new(0, 8)
+sidebarPad.PaddingRight = UDim.new(0, 8)
+local content = Instance.new("Frame", panel)
+content.Position = UDim2.fromOffset(SIDEBAR_W + 10, 62)
+content.Size = UDim2.new(1, -(SIDEBAR_W + 20), 1, -72)
+content.BackgroundTransparency = 1
+content.BorderSizePixel = 0
+local contentScroll = Instance.new("ScrollingFrame", content)
+contentScroll.BackgroundTransparency = 1
+contentScroll.BorderSizePixel = 0
+contentScroll.Size = UDim2.new(1, 0, 1, 0)
+contentScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+contentScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+contentScroll.ScrollBarThickness = 4
+contentScroll.ScrollBarImageColor3 = COLORS.accent
+local contentList = Instance.new("UIListLayout", contentScroll)
+contentList.Padding = UDim.new(0, 10)
+contentList.SortOrder = Enum.SortOrder.LayoutOrder
+local contentPad = Instance.new("UIPadding", contentScroll)
+contentPad.PaddingRight = UDim.new(0, 8)
+contentPad.PaddingBottom = UDim.new(0, 12)
+local function makeDraggable(frame, dragArea)
+    dragArea = dragArea or frame
+    local dragging, dragStart, startPos = false, nil, nil
+    H.track(dragArea.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end))
+    H.track(UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end))
+end
+makeDraggable(panel, header)
+do
+    local dragging, dragStart, startPos, moved = false, nil, nil, false
+    H.track(toggleBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            moved = false
+            dragStart = input.Position
+            startPos = toggleBtn.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end))
+    H.track(UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            if math.abs(delta.X) > 4 or math.abs(delta.Y) > 4 then moved = true end
+            toggleBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end))
+    H.track(toggleBtn.MouseButton1Click:Connect(function()
+        if moved then return end
+        panel.Visible = not panel.Visible
+    end))
+end
+local function makeTabButton(tabId, tabTitle)
+    local btn = Instance.new("TextButton", sidebarScroll)
+    btn.Name = "Tab_" .. tabId
+    btn.Size = UDim2.new(1, 0, 0, 32)
+    btn.BackgroundColor3 = COLORS.sectionBg
+    btn.BackgroundTransparency = 0.5
+    btn.BorderSizePixel = 0
+    btn.AutoButtonColor = false
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 13
+    btn.TextColor3 = COLORS.textDim
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.Text = tabTitle
+    addCorner(btn, 6)
+    local pad = Instance.new("UIPadding", btn)
+    pad.PaddingLeft = UDim.new(0, 12)
+    local indicator = Instance.new("Frame", btn)
+    indicator.Size = UDim2.new(0, 3, 0, 0)
+    indicator.Position = UDim2.new(0, 0, 0.5, 0)
+    indicator.AnchorPoint = Vector2.new(0, 0.5)
+    indicator.BackgroundColor3 = COLORS.accent
+    indicator.BorderSizePixel = 0
+    addCorner(indicator, 2)
+    local function setActive(active)
+        if active then
+            TweenService:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(30, 20, 20), BackgroundTransparency = 0.2 }):Play()
+            TweenService:Create(btn, TweenInfo.new(0.15), { TextColor3 = COLORS.text }):Play()
+            TweenService:Create(indicator, TweenInfo.new(0.15), { Size = UDim2.new(0, 3, 0.7, 0) }):Play()
+        else
+            TweenService:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = COLORS.sectionBg, BackgroundTransparency = 0.5 }):Play()
+            TweenService:Create(btn, TweenInfo.new(0.15), { TextColor3 = COLORS.textDim }):Play()
+            TweenService:Create(indicator, TweenInfo.new(0.15), { Size = UDim2.new(0, 3, 0, 0) }):Play()
+        end
+    end
+    return btn, setActive
+end
+function UI.AddTab(opts)
+    local id = opts.Id
+    local btn, setActive = makeTabButton(id, opts.Title)
+    local page = Instance.new("ScrollingFrame", contentScroll)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.ScrollBarThickness = 4
+    page.ScrollBarImageColor3 = COLORS.accent
+    page.Visible = false
+    local pageList = Instance.new("UIListLayout", page)
+    pageList.Padding = UDim.new(0, 10)
+    pageList.SortOrder = Enum.SortOrder.LayoutOrder
+    local pagePad = Instance.new("UIPadding", page)
+    pagePad.PaddingRight = UDim.new(0, 6)
+    local tab = { Id = id, Page = page, Button = btn, SetActive = setActive }
+    btn.MouseButton1Click:Connect(function()
+        if UI.__activeTab == id then return end
+        for tid, other in pairs(UI.__tabs) do
+            other.Page.Visible = (tid == id)
+            other.SetActive(tid == id)
+        end
+        UI.__activeTab = id
+    end)
+    UI.__tabs[id] = tab
+    if not UI.__activeTab then
+        UI.__activeTab = id
+        page.Visible = true
+        setActive(true)
+    end
+    return tab
+end
+function UI.AddSection(tab, opts)
+    local section = Instance.new("Frame", tab.Page)
+    section.BackgroundColor3 = COLORS.sectionBg
+    section.BackgroundTransparency = 0.35
+    section.BorderSizePixel = 0
+    section.Size = UDim2.new(1, 0, 0, 0)
+    section.AutomaticSize = Enum.AutomaticSize.Y
+    addCorner(section, 8)
+    addStroke(section, COLORS.sectionBorder, 1)
+    local sectionList = Instance.new("UIListLayout", section)
+    sectionList.Padding = UDim.new(0, 6)
+    sectionList.SortOrder = Enum.SortOrder.LayoutOrder
+    local sectionPad = Instance.new("UIPadding", section)
+    sectionPad.PaddingTop = UDim.new(0, 10)
+    sectionPad.PaddingBottom = UDim.new(0, 10)
+    sectionPad.PaddingLeft = UDim.new(0, 12)
+    sectionPad.PaddingRight = UDim.new(0, 12)
+    if opts.Title then
+        local h = Instance.new("TextLabel", section)
+        h.BackgroundTransparency = 1
+        h.Size = UDim2.new(1, 0, 0, 20)
+        h.Font = Enum.Font.GothamBold
+        h.TextSize = 13
+        h.TextColor3 = COLORS.text
+        h.TextXAlignment = Enum.TextXAlignment.Left
+        h.Text = opts.Title
+    end
+    if opts.Description then
+        local d = Instance.new("TextLabel", section)
+        d.BackgroundTransparency = 1
+        d.Size = UDim2.new(1, 0, 0, 16)
+        d.Font = Enum.Font.Gotham
+        d.TextSize = 11
+        d.TextColor3 = COLORS.textMuted
+        d.TextXAlignment = Enum.TextXAlignment.Left
+        d.TextWrapped = true
+        d.Text = opts.Description
+    end
+    return section
+end
+local function makeRow(parent, height)
+    local row = Instance.new("Frame", parent)
+    row.BackgroundColor3 = COLORS.panelBg2
+    row.BackgroundTransparency = 0.4
+    row.BorderSizePixel = 0
+    row.Size = UDim2.new(1, 0, 0, height or 30)
+    addCorner(row, 6)
+    local pad = Instance.new("UIPadding", row)
+    pad.PaddingLeft = UDim.new(0, 10)
+    pad.PaddingRight = UDim.new(0, 10)
+    return row
+end
+function UI.AddToggle(parent, opts)
+    local row = makeRow(parent, 36)
+    local name = Instance.new("TextLabel", row)
+    name.BackgroundTransparency = 1
+    name.Size = UDim2.new(1, -60, 0, 22)
+    name.Font = Enum.Font.GothamMedium
+    name.TextSize = 13
+    name.TextColor3 = COLORS.text
+    name.TextXAlignment = Enum.TextXAlignment.Left
+    name.Text = opts.Title or "Toggle"
+    if opts.Description then
+        local d = Instance.new("TextLabel", row)
+        d.BackgroundTransparency = 1
+        d.Position = UDim2.fromOffset(0, 20)
+        d.Size = UDim2.new(1, -60, 0, 14)
+        d.Font = Enum.Font.Gotham
+        d.TextSize = 11
+        d.TextColor3 = COLORS.textMuted
+        d.TextXAlignment = Enum.TextXAlignment.Left
+        d.Text = opts.Description
+    end
+    local switch = Instance.new("TextButton", row)
+    switch.Size = UDim2.fromOffset(40, 22)
+    switch.Position = UDim2.new(1, -40, 0.5, -11)
+    switch.BackgroundColor3 = COLORS.toggleOff
+    switch.BorderSizePixel = 0
+    switch.Text = ""
+    switch.AutoButtonColor = false
+    addCorner(switch, 11)
+    local knob = Instance.new("Frame", switch)
+    knob.Size = UDim2.fromOffset(18, 18)
+    knob.Position = UDim2.fromOffset(2, 2)
+    knob.BackgroundColor3 = COLORS.text
+    knob.BorderSizePixel = 0
+    addCorner(knob, 9)
+    local state = opts.Default == true
+    local function render(animate)
+        local info = TweenInfo.new(animate and 0.18 or 0)
+        TweenService:Create(switch, info, { BackgroundColor3 = state and COLORS.toggleOn or COLORS.toggleOff }):Play()
+        TweenService:Create(knob, info, { Position = state and UDim2.fromOffset(20, 2) or UDim2.fromOffset(2, 2) }):Play()
+    end
+    render(false)
+    UI.__state[opts.Id] = state
+    switch.MouseButton1Click:Connect(function()
+        state = not state
+        UI.SetState(opts.Id, state, true)
+        render(true)
+        if opts.Callback then pcall(opts.Callback, state) end
+    end)
+    return switch
+end
+function UI.AddSlider(parent, opts)
+    local row = makeRow(parent, 44)
+    local label = Instance.new("TextLabel", row)
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, -80, 0, 20)
+    label.Font = Enum.Font.GothamMedium
+    label.TextSize = 13
+    label.TextColor3 = COLORS.text
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Text = opts.Title or "Slider"
+    local valueLabel = Instance.new("TextLabel", row)
+    valueLabel.BackgroundTransparency = 1
+    valueLabel.Position = UDim2.new(1, -80, 0, 0)
+    valueLabel.Size = UDim2.fromOffset(80, 20)
+    valueLabel.Font = Enum.Font.GothamBold
+    valueLabel.TextSize = 12
+    valueLabel.TextColor3 = COLORS.accentHi
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+    local bar = Instance.new("Frame", row)
+    bar.Position = UDim2.fromOffset(0, 26)
+    bar.Size = UDim2.new(1, 0, 0, 6)
+    bar.BackgroundColor3 = COLORS.toggleOff
+    bar.BorderSizePixel = 0
+    addCorner(bar, 3)
+    local fill = Instance.new("Frame", bar)
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BackgroundColor3 = COLORS.accent
+    fill.BorderSizePixel = 0
+    addCorner(fill, 3)
+    local knob = Instance.new("Frame", bar)
+    knob.Size = UDim2.fromOffset(14, 14)
+    knob.AnchorPoint = Vector2.new(0.5, 0.5)
+    knob.Position = UDim2.new(0, 0, 0.5, 0)
+    knob.BackgroundColor3 = COLORS.text
+    knob.BorderSizePixel = 0
+    addCorner(knob, 7)
+    local minV, maxV, stepV = opts.Min or 0, opts.Max or 100, opts.Step or 1
+    local suffix = opts.Suffix or ""
+    local value = tonumber(opts.Default) or minV
+    UI.__state[opts.Id] = value
+    local function render()
+        local alpha = (value - minV) / math.max(0.0001, (maxV - minV))
+        fill.Size = UDim2.new(alpha, 0, 1, 0)
+        knob.Position = UDim2.new(alpha, 0, 0.5, 0)
+        valueLabel.Text = tostring(value) .. suffix
+    end
+    render()
+    local dragging = false
+    local function updateFromX(x)
+        local absX = bar.AbsolutePosition.X
+        local absW = bar.AbsoluteSize.X
+        local alpha = math.clamp((x - absX) / math.max(1, absW), 0, 1)
+        local raw = minV + alpha * (maxV - minV)
+        local snapped = math.floor((raw - minV) / stepV + 0.5) * stepV + minV
+        snapped = math.clamp(snapped, minV, maxV)
+        if snapped ~= value then
+            value = snapped
+            UI.SetState(opts.Id, value, true)
+            render()
+            if opts.Callback then pcall(opts.Callback, value) end
+        end
+    end
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            updateFromX(input.Position.X)
+        end
+    end)
+    H.track(UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            updateFromX(input.Position.X)
+        end
+    end))
+    H.track(UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end))
+    return bar
+endfunction UI.AddDropdown(parent, opts)
+    local isMulti = opts.Multi == true
+    local row = makeRow(parent, 34)
+    local label = Instance.new("TextLabel", row)
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, -120, 1, 0)
+    label.Font = Enum.Font.GothamMedium
+    label.TextSize = 13
+    label.TextColor3 = COLORS.text
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Text = opts.Title or "Dropdown"
+    local valueLabel = Instance.new("TextLabel", row)
+    valueLabel.BackgroundTransparency = 1
+    valueLabel.Position = UDim2.new(1, -210, 0, 0)
+    valueLabel.Size = UDim2.fromOffset(170, 34)
+    valueLabel.Font = Enum.Font.Gotham
+    valueLabel.TextSize = 12
+    valueLabel.TextColor3 = COLORS.textDim
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+    valueLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    local arrowBtn = Instance.new("TextButton", row)
+    arrowBtn.Size = UDim2.fromOffset(28, 24)
+    arrowBtn.Position = UDim2.new(1, -32, 0.5, -12)
+    arrowBtn.BackgroundColor3 = COLORS.toggleOff
+    arrowBtn.BackgroundTransparency = 0.4
+    arrowBtn.BorderSizePixel = 0
+    arrowBtn.AutoButtonColor = false
+    arrowBtn.Font = Enum.Font.GothamBold
+    arrowBtn.TextSize = 12
+    arrowBtn.TextColor3 = COLORS.text
+    arrowBtn.Text = "v"
+    addCorner(arrowBtn, 4)
+    local dropdown = Instance.new("Frame", parent)
+    dropdown.BackgroundColor3 = COLORS.panelBg2
+    dropdown.BorderSizePixel = 0
+    dropdown.Size = UDim2.new(1, 0, 0, 0)
+    dropdown.AutomaticSize = Enum.AutomaticSize.Y
+    dropdown.Visible = false
+    addCorner(dropdown, 6)
+    addStroke(dropdown, COLORS.panelBorder, 1)
+    local dropdownList = Instance.new("UIListLayout", dropdown)
+    dropdownList.Padding = UDim.new(0, 2)
+    dropdownList.SortOrder = Enum.SortOrder.LayoutOrder
+    local dropdownPad = Instance.new("UIPadding", dropdown)
+    dropdownPad.PaddingTop = UDim.new(0, 4)
+    dropdownPad.PaddingBottom = UDim.new(0, 4)
+    dropdownPad.PaddingLeft = UDim.new(0, 4)
+    dropdownPad.PaddingRight = UDim.new(0, 4)
+    local selected
+    if isMulti then
+        selected = {}
+        if typeof(opts.Default) == "table" then
+            for _, v in ipairs(opts.Default) do selected[v] = true end
+        end
+        UI.__state[opts.Id] = {}
+        for k in pairs(selected) do table.insert(UI.__state[opts.Id], k) end
+    else
+        selected = opts.Default or (opts.Options and opts.Options[1])
+        UI.__state[opts.Id] = selected
+    end
+    local function updateLabel()
+        if isMulti then
+            local list = {}
+            for k, v in pairs(selected) do if v then table.insert(list, k) end end
+            table.sort(list)
+            if #list == 0 then valueLabel.Text = "All"
+            elseif #list <= 2 then valueLabel.Text = table.concat(list, ", ")
+            else valueLabel.Text = string.format("%s +%d", list[1], #list - 1) end
+        else
+            valueLabel.Text = tostring(selected or "")
+        end
+    end
+    updateLabel()
+    local entries = {}
+    for _, option in ipairs(opts.Options or {}) do
+        local entry = Instance.new("TextButton", dropdown)
+        entry.Size = UDim2.new(1, 0, 0, 24)
+        entry.BackgroundColor3 = COLORS.sectionBg
+        entry.BackgroundTransparency = 0.6
+        entry.BorderSizePixel = 0
+        entry.AutoButtonColor = false
+        entry.Font = Enum.Font.Gotham
+        entry.TextSize = 12
+        entry.TextColor3 = COLORS.text
+        entry.TextXAlignment = Enum.TextXAlignment.Left
+        entry.Text = "  " .. tostring(option)
+        addCorner(entry, 4)
+        entries[option] = entry
+        local function refresh()
+            local active
+            if isMulti then active = selected[option] == true
+            else active = (selected == option) end
+            entry.TextColor3 = active and COLORS.accentHi or COLORS.text
+        end
+        refresh()
+        entry.MouseEnter:Connect(function() TweenService:Create(entry, TweenInfo.new(0.12), { BackgroundTransparency = 0.3 }):Play() end)
+        entry.MouseLeave:Connect(function()
+            TweenService:Create(entry, TweenInfo.new(0.12), { BackgroundTransparency = 0.6 }):Play()
+            refresh()
+        end)
+        entry.MouseButton1Click:Connect(function()
+            if isMulti then
+                selected[option] = not selected[option]
+                local list = {}
+                for k, v in pairs(selected) do if v then table.insert(list, k) end end
+                UI.SetState(opts.Id, list, true)
+            else
+                selected = option
+                UI.SetState(opts.Id, selected, true)
+            end
+            for optName, e in pairs(entries) do
+                local active = isMulti and selected[optName] == true or (not isMulti and selected == optName)
+                e.TextColor3 = active and COLORS.accentHi or COLORS.text
+            end
+            updateLabel()
+            if opts.Callback then pcall(opts.Callback, UI.__state[opts.Id]) end
+            if not isMulti then
+                dropdown.Visible = false
+                arrowBtn.Text = "v"
+            end
+        end)
+    end
+    arrowBtn.MouseButton1Click:Connect(function()
+        dropdown.Visible = not dropdown.Visible
+        arrowBtn.Text = dropdown.Visible and "^" or "v"
+    end)
+    return arrowBtn
+end
+function UI.AddButton(parent, opts)
+    local row = makeRow(parent, 34)
+    local btn = Instance.new("TextButton", row)
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.BorderSizePixel = 0
+    btn.AutoButtonColor = false
+    btn.Font = Enum.Font.GothamSemibold
+    btn.TextSize = 13
+    btn.TextColor3 = COLORS.text
+    btn.Text = opts.Title or "Button"
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    local action = Instance.new("TextLabel", row)
+    action.BackgroundColor3 = COLORS.accent
+    action.BackgroundTransparency = 0.2
+    action.Size = UDim2.fromOffset(70, 24)
+    action.Position = UDim2.new(1, -70, 0.5, -12)
+    action.Font = Enum.Font.GothamBold
+    action.TextSize = 12
+    action.TextColor3 = COLORS.text
+    action.Text = opts.Text or "Run"
+    addCorner(action, 4)
+    btn.MouseEnter:Connect(function() TweenService:Create(action, TweenInfo.new(0.12), { BackgroundTransparency = 0 }):Play() end)
+    btn.MouseLeave:Connect(function() TweenService:Create(action, TweenInfo.new(0.12), { BackgroundTransparency = 0.2 }):Play() end)
+    btn.MouseButton1Click:Connect(function()
+        if opts.Callback then pcall(opts.Callback) end
+    end)
+    return btn
+end
+function UI.AddParagraph(parent, opts)
+    local row = makeRow(parent, 44)
+    local title = Instance.new("TextLabel", row)
+    title.BackgroundTransparency = 1
+    title.Size = UDim2.new(1, 0, 0, 18)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 12
+    title.TextColor3 = COLORS.text
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Text = opts.Title or ""
+    local body = Instance.new("TextLabel", row)
+    body.BackgroundTransparency = 1
+    body.Position = UDim2.fromOffset(0, 18)
+    body.Size = UDim2.new(1, 0, 0, 26)
+    body.Font = Enum.Font.Gotham
+    body.TextSize = 11
+    body.TextColor3 = COLORS.textDim
+    body.TextXAlignment = Enum.TextXAlignment.Left
+    body.TextWrapped = true
+    body.TextYAlignment = Enum.TextYAlignment.Top
+    body.Text = opts.Content or ""
+    return row
+end
+function UI.AddInput(parent, opts)
+    local row = makeRow(parent, 34)
+    local label = Instance.new("TextLabel", row)
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(0.4, 0, 1, 0)
+    label.Font = Enum.Font.GothamMedium
+    label.TextSize = 13
+    label.TextColor3 = COLORS.text
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Text = opts.Title or "Input"
+    local box = Instance.new("TextBox", row)
+    box.BackgroundColor3 = COLORS.toggleOff
+    box.BackgroundTransparency = 0.2
+    box.BorderSizePixel = 0
+    box.Position = UDim2.fromScale(0.42, 0.5)
+    box.AnchorPoint = Vector2.new(0, 0.5)
+    box.Size = UDim2.new(0.58, -10, 0, 26)
+    box.Font = Enum.Font.Gotham
+    box.TextSize = 12
+    box.TextColor3 = COLORS.text
+    box.PlaceholderColor3 = COLORS.textMuted
+    box.PlaceholderText = opts.Placeholder or ""
+    box.Text = tostring(opts.Default or "")
+    box.ClearTextOnFocus = false
+    box.TextXAlignment = Enum.TextXAlignment.Left
+    addCorner(box, 4)
+    local pad = Instance.new("UIPadding", box)
+    pad.PaddingLeft = UDim.new(0, 8)
+    pad.PaddingRight = UDim.new(0, 8)
+    UI.__state[opts.Id] = box.Text
+    box.FocusLost:Connect(function()
+        UI.SetState(opts.Id, box.Text, true)
+        if opts.Callback then pcall(opts.Callback, box.Text) end
+    end)
+    return box
+end
+function UI.AddStatus(parent, opts)
+    local row = makeRow(parent, 26)
+    local name = Instance.new("TextLabel", row)
+    name.BackgroundTransparency = 1
+    name.Size = UDim2.new(0.6, 0, 1, 0)
+    name.Font = Enum.Font.Gotham
+    name.TextSize = 12
+    name.TextColor3 = COLORS.textDim
+    name.TextXAlignment = Enum.TextXAlignment.Left
+    name.Text = opts.Title or "Status"
+    local value = Instance.new("TextLabel", row)
+    value.BackgroundTransparency = 1
+    value.Size = UDim2.new(0.4, 0, 1, 0)
+    value.Position = UDim2.fromScale(0.6, 0)
+    value.Font = Enum.Font.GothamBold
+    value.TextSize = 12
+    value.TextColor3 = COLORS.text
+    value.TextXAlignment = Enum.TextXAlignment.Right
+    value.Text = tostring(opts.Value or "")
+    local api = {}
+    function api.SetValue(v) value.Text = tostring(v) end
+    function api.SetStatus(status)
+        if status == "Success" then value.TextColor3 = COLORS.success
+        elseif status == "Warning" then value.TextColor3 = COLORS.warning
+        elseif status == "Error" then value.TextColor3 = COLORS.error
+        elseif status == "Info" then value.TextColor3 = COLORS.info
+        else value.TextColor3 = COLORS.text end
+    end
+    return api
+end
+local NotifyHolder = Instance.new("Frame", screenGui)
+NotifyHolder.BackgroundTransparency = 1
+NotifyHolder.AnchorPoint = Vector2.new(1, 1)
+NotifyHolder.Position = UDim2.new(1, -16, 1, -16)
+NotifyHolder.Size = UDim2.fromOffset(280, 400)
+local NotifyList = Instance.new("UIListLayout", NotifyHolder)
+NotifyList.Padding = UDim.new(0, 6)
+NotifyList.SortOrder = Enum.SortOrder.LayoutOrder
+NotifyList.VerticalAlignment = Enum.VerticalAlignment.Bottom
+NotifyList.HorizontalAlignment = Enum.HorizontalAlignment.Right
+function H.notify(title, content, variant, duration)
+    local note = Instance.new("Frame", NotifyHolder)
+    note.BackgroundColor3 = COLORS.panelBg
+    note.BackgroundTransparency = 0.05
+    note.BorderSizePixel = 0
+    note.Size = UDim2.fromOffset(260, 52)
+    addCorner(note, 8)
+    local strokeColor = COLORS.panelBorderHi
+    if variant == "Success" then strokeColor = COLORS.success
+    elseif variant == "Warning" then strokeColor = COLORS.warning
+    elseif variant == "Error" then strokeColor = COLORS.error
+    elseif variant == "Info" then strokeColor = COLORS.info end
+    addStroke(note, strokeColor, 1.5)
+    local t = Instance.new("TextLabel", note)
+    t.BackgroundTransparency = 1
+    t.Position = UDim2.fromOffset(12, 6)
+    t.Size = UDim2.new(1, -24, 0, 18)
+    t.Font = Enum.Font.GothamBold
+    t.TextSize = 13
+    t.TextColor3 = strokeColor
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.Text = tostring(title or "Zen Apex Hub")
+    local c = Instance.new("TextLabel", note)
+    c.BackgroundTransparency = 1
+    c.Position = UDim2.fromOffset(12, 24)
+    c.Size = UDim2.new(1, -24, 0, 22)
+    c.Font = Enum.Font.Gotham
+    c.TextSize = 11
+    c.TextColor3 = COLORS.textDim
+    c.TextXAlignment = Enum.TextXAlignment.Left
+    c.TextWrapped = true
+    c.TextYAlignment = Enum.TextYAlignment.Top
+    c.Text = tostring(content or "")
+    task.delay(tonumber(duration) or 3, function()
+        local info = TweenInfo.new(0.25)
+        TweenService:Create(note, info, { BackgroundTransparency = 1 }):Play()
+        for _, d in ipairs(note:GetDescendants()) do
+            if d:IsA("TextLabel") then TweenService:Create(d, info, { TextTransparency = 1 }):Play()
+            elseif d:IsA("UIStroke") then TweenService:Create(d, info, { Transparency = 1 }):Play() end
+        end
+        task.wait(0.3)
+        note:Destroy()
+    end)
+    return note
+endlocal refs = {}
+do
+    local HomeTab = UI.AddTab({ Id = "home", Title = "Home" })
+    local SessionSec = UI.AddSection(HomeTab, { Title = "Session" })
+    local AccountSec = UI.AddSection(HomeTab, { Title = "Account" })
+    local QuickSec = UI.AddSection(HomeTab, { Title = "Quick Actions" })
+    refs.stolenRow = UI.AddStatus(SessionSec, { Title = "Stolen Eggs", Value = "0" })
+    UI.AddStatus(SessionSec, { Title = "Server", Value = DisplayJobId })
+    refs.moneyRow = UI.AddStatus(AccountSec, { Title = "Money", Value = "0" })
+    refs.rebirthRow = UI.AddStatus(AccountSec, { Title = "Rebirths", Value = "0" })
+    UI.AddButton(QuickSec, { Title = "Return to Base", Text = "Go", Callback = function()
+        task.spawn(function()
+            if not H.getBasePosition() or not H.returnToBaseBypass(nil) then
+                H.notify("Return", "Khong the ve base", "Warning", 3)
+            end
+        end)
+    end })
+    UI.AddButton(QuickSec, { Title = "Place Eggs", Text = "Place", Callback = function()
+        task.spawn(function() H.runAutoPlaceEggs(true) end)
+    end })
+    UI.AddButton(QuickSec, { Title = "Server Hop", Text = "Hop", Callback = function()
+        task.spawn(function() ServerHopRetryAfter = 0; H.serverHop("Manual") end)
+    end })
+    UI.AddButton(QuickSec, { Title = "Fuse Now", Text = "Fuse", Callback = function()
+        task.spawn(function() H.runAutoFusePets(true) end)
+    end })
+    UI.AddButton(QuickSec, { Title = "Drop to Void", Text = "Drop", Callback = function()
+        task.spawn(function()
+            local root = H.getRoot()
+            if root then root.CFrame = CFrame.new(root.Position.X, -350, root.Position.Z) end
+        end)
+    end })
+    local FarmTab = UI.AddTab({ Id = "farm", Title = "Farm" })
+    local StealSec = UI.AddSection(FarmTab, { Title = "Auto Steal" })
+    local LifeSec = UI.AddSection(FarmTab, { Title = "Egg Handling" })
+    local ServerSec = UI.AddSection(FarmTab, { Title = "Server Hop" })
+    local PrioritySec = UI.AddSection(FarmTab, { Title = "Task Order" })
+    UI.AddToggle(StealSec, { Id = "AutoStealSelected", Title = "Auto Steal Selected", Default = false })
+    UI.AddToggle(StealSec, { Id = "AutoStealAll", Title = "Auto Steal All", Default = false })
+    UI.AddToggle(StealSec, { Id = "StealBigEggs", Title = "Steal Big Eggs", Default = false })
+    UI.AddDropdown(StealSec, { Id = "StealZones", Title = "Areas", Options = AREA_ORDER, Multi = true, Default = {} })
+    UI.AddDropdown(StealSec, { Id = "StealRarities", Title = "Rarities", Options = RARITIES, Multi = true, Default = {} })
+    UI.AddDropdown(StealSec, { Id = "StealMutations", Title = "Mutations", Options = MUTATIONS, Multi = true, Default = {} })
+    UI.AddDropdown(StealSec, { Id = "StealPriority", Title = "Target Priority", Options = STEAL_PRIORITIES, Default = "Rarest" })
+    UI.AddSlider(StealSec, { Id = "StealBigEggScale", Title = "Min Big Egg Size", Min = 1, Max = 50, Default = 1.5, Step = 0.1, Suffix = "x" })
+    UI.AddDropdown(StealSec, { Id = "FarmMethod", Title = "Farm Method", Options = { "Speed", "TP Walk" }, Default = "Speed" })
+    UI.AddSlider(StealSec, { Id = "TP_STEP", Title = "TP Step Size", Min = 10, Max = 200, Default = 45, Step = 5 })
+    UI.AddToggle(StealSec, { Id = "AntiTrap", Title = "Anti Trap", Default = true })
+    UI.AddToggle(StealSec, { Id = "AutoReturn", Title = "Auto Return to Base", Default = true })
+    UI.AddToggle(StealSec, { Id = "AutoDropEgg", Title = "Auto Drop Held Egg", Default = false })
+    UI.AddToggle(LifeSec, { Id = "AutoPlaceSelected", Title = "Auto Place Selected", Default = false })
+    UI.AddToggle(LifeSec, { Id = "AutoPlaceAll", Title = "Auto Place All", Default = false })
+    UI.AddToggle(LifeSec, { Id = "AutoOpenReadyEggs", Title = "Auto Hatch Ready", Default = false })
+    UI.AddDropdown(LifeSec, { Id = "LifecycleRarities", Title = "Lifecycle Rarities", Options = RARITIES, Multi = true, Default = {} })
+    UI.AddDropdown(LifeSec, { Id = "LifecycleMutations", Title = "Lifecycle Mutations", Options = MUTATIONS, Multi = true, Default = {} })
+    UI.AddToggle(LifeSec, { Id = "AutoSellEggs", Title = "Auto Sell Eggs", Default = false })
+    UI.AddDropdown(LifeSec, { Id = "SellEggRarities", Title = "Sell Rarities", Options = RARITIES, Multi = true, Default = {} })
+    UI.AddToggle(ServerSec, { Id = "AutoServerHop", Title = "Auto Server Hop", Default = false })
+    UI.AddDropdown(ServerSec, { Id = "HopMode", Title = "Hop When", Options = ServerHopModes, Default = "No Matching Eggs" })
+    UI.AddSlider(ServerSec, { Id = "HopValue", Title = "Wait Before Hop", Min = 1, Max = 200, Default = 15, Step = 1 })
+    for i, name in ipairs(PrioritySlotOptionNames) do
+        UI.AddDropdown(PrioritySec, { Id = name, Title = "Priority " .. i, Options = PriorityTaskNames, Default = PriorityTaskNames[i] })
+    end
+    local PetsTab = UI.AddTab({ Id = "pets", Title = "Pets" })
+    local PetsOverview = UI.AddSection(PetsTab, { Title = "Pets" })
+    local FuseSec = UI.AddSection(PetsTab, { Title = "Auto Fuse" })
+    local SellPetSec = UI.AddSection(PetsTab, { Title = "Auto Sell Pets" })
+    local VisualPetSec = UI.AddSection(PetsTab, { Title = "Visual Pets (Client Only)" })
+    UI.AddToggle(PetsOverview, { Id = "AutoEquipBest", Title = "Auto Equip Best Pets", Default = false })
+    UI.AddToggle(FuseSec, { Id = "AutoFusePets", Title = "Auto Fuse Pets", Default = false })
+    UI.AddDropdown(FuseSec, { Id = "FuseRarities", Title = "Fuse Rarities", Options = RARITIES, Multi = true, Default = {} })
+    UI.AddDropdown(FuseSec, { Id = "FuseMutations", Title = "Fuse Mutations", Options = MUTATIONS, Multi = true, Default = {} })
+    UI.AddDropdown(FuseSec, { Id = "FuseTarget", Title = "Pick Group By", Options = FUSE_TARGET_MODES, Default = "Highest Rarity" })
+    UI.AddToggle(FuseSec, { Id = "FuseKeepMutated", Title = "Never Fuse Mutated", Default = true })
+    UI.AddToggle(FuseSec, { Id = "FuseKeepEquipped", Title = "Never Fuse Equipped", Default = true })
+    UI.AddToggle(FuseSec, { Id = "FuseAutoReveal", Title = "Auto Complete Reveal", Default = true })
+    UI.AddSlider(FuseSec, { Id = "FuseMaxScale", Title = "Max Scale to Fuse", Min = 0, Max = 10, Default = 10, Step = 0.1 })
+    UI.AddSlider(FuseSec, { Id = "FuseKeepPerCategory", Title = "Keep Per Type", Min = 0, Max = 20, Default = 0, Step = 1 })
+    UI.AddSlider(FuseSec, { Id = "FuseInterval", Title = "Fuse Interval", Min = 1, Max = 120, Default = 8, Step = 1, Suffix = " s" })
+    UI.AddToggle(SellPetSec, { Id = "AutoSellPets", Title = "Auto Sell Pets", Default = false })
+    UI.AddDropdown(SellPetSec, { Id = "SellRarities", Title = "Sell Rarities", Options = RARITIES, Multi = true, Default = {} })
+    UI.AddDropdown(SellPetSec, { Id = "SellMutations", Title = "Sell Mutations", Options = MUTATIONS, Multi = true, Default = {} })
+    UI.AddToggle(SellPetSec, { Id = "SellKeepMutated", Title = "Never Sell Mutated", Default = true })
+    UI.AddToggle(SellPetSec, { Id = "SellKeepEquipped", Title = "Never Sell Equipped", Default = true })
+    UI.AddSlider(SellPetSec, { Id = "SellMaxScale", Title = "Max Scale to Sell", Min = 0, Max = 10, Default = 10, Step = 0.1 })
+    UI.AddSlider(SellPetSec, { Id = "SellInterval", Title = "Sell Interval", Min = 1, Max = 120, Default = 6, Step = 1, Suffix = " s" })
+    VisualPet.startLoop()
+    UI.AddInput(VisualPetSec, { Id = "VisualPetName", Title = "Ten Pet", Placeholder = "Dragon", Default = "", Callback = function(v)
+        VisualPet.inputName = v
+    end })
+    UI.AddButton(VisualPetSec, { Title = "Spawn Pet", Text = "Spawn", Callback = function()
+        if VisualPet.inputName == "" then
+            H.notify("Visual Pets", "Nhap ten pet truoc", "Warning", 3)
+            return
+        end
+        VisualPet.spawn(VisualPet.inputName)
+    end })
+    UI.AddButton(VisualPetSec, { Title = "Remove Last", Text = "Remove", Callback = function()
+        VisualPet.removeLast()
+    end })
+    UI.AddButton(VisualPetSec, { Title = "Remove All", Text = "Clear", Callback = function()
+        VisualPet.removeAll()
+    end })
+    UI.AddSlider(VisualPetSec, { Id = "VisualPetRadius", Title = "Orbit Radius", Min = 2, Max = 20, Default = 4, Step = 1, Callback = function(v)
+        VisualPet.orbitRadius = v
+    end })
+    UI.AddSlider(VisualPetSec, { Id = "VisualPetSpeed", Title = "Orbit Speed", Min = 0, Max = 10, Default = 1, Step = 1, Callback = function(v)
+        VisualPet.orbitSpeed = v * 0.2
+    end })
+    local ProgressTab = UI.AddTab({ Id = "progress", Title = "Progress" })
+    local UpgradesSec = UI.AddSection(ProgressTab, { Title = "Upgrades" })
+    local RewardsSec = UI.AddSection(ProgressTab, { Title = "Rewards" })
+    local TrainingSec = UI.AddSection(ProgressTab, { Title = "Training" })
+    UI.AddToggle(UpgradesSec, { Id = "AutoUpgrades", Title = "Auto Buy Upgrades", Default = false })
+    UI.AddDropdown(UpgradesSec, { Id = "UpgradeTypes", Title = "Upgrade Types", Options = UPGRADE_TYPES, Multi = true, Default = { "Base", "Treadmill" } })
+    UI.AddToggle(RewardsSec, { Id = "AutoClaimIndex", Title = "Auto Claim Index", Default = false })
+    UI.AddToggle(RewardsSec, { Id = "AutoClaimGroupReward", Title = "Auto Claim Group Reward", Default = false })
+    UI.AddToggle(RewardsSec, { Id = "AutoClaimOffline", Title = "Claim Offline Earnings", Default = false })
+    UI.AddToggle(TrainingSec, { Id = "AutoTreadmill", Title = "Auto Treadmill Training", Default = false })
+    local PlayerTab = UI.AddTab({ Id = "player", Title = "Player" })
+    local EspSec = UI.AddSection(PlayerTab, { Title = "ESP" })
+    local MoveSec = UI.AddSection(PlayerTab, { Title = "Movement" })
+    local TeleportSec = UI.AddSection(PlayerTab, { Title = "Teleports" })
+    UI.AddToggle(EspSec, { Id = "EspWorldEggs", Title = "World Egg ESP", Default = false })
+    UI.AddToggle(EspSec, { Id = "EspCarriedEggs", Title = "Carried/Dropped Egg ESP", Default = false })
+    UI.AddToggle(EspSec, { Id = "EspGuards", Title = "Guard ESP", Default = false })
+    UI.AddToggle(EspSec, { Id = "EspPets", Title = "Pet ESP", Default = false })
+    UI.AddToggle(EspSec, { Id = "EspPlayers", Title = "Player ESP", Default = false })
+    UI.AddToggle(EspSec, { Id = "EspMachines", Title = "Machine ESP", Default = false })
+    UI.AddToggle(EspSec, { Id = "EspPlots", Title = "Plot ESP", Default = false })
+    UI.AddSlider(EspSec, { Id = "EspDistance", Title = "Render Distance", Min = 100, Max = 6000, Default = 2000, Step = 50, Suffix = " studs" })
+    UI.AddToggle(MoveSec, { Id = "WalkSpeedEnabled", Title = "Walk Speed Override", Default = false, Callback = function(v)
+        Movement.WalkSpeedEnabled = v
+    end })
+    UI.AddSlider(MoveSec, { Id = "WalkSpeed", Title = "Walk Speed", Min = 16, Max = 500, Default = 32, Step = 1, Callback = function(v)
+        Movement.WalkSpeed = v
+    end })
+    UI.AddToggle(MoveSec, { Id = "JumpPowerEnabled", Title = "Jump Power Override", Default = false, Callback = function(v)
+        Movement.JumpPowerEnabled = v
+    end })
+    UI.AddSlider(MoveSec, { Id = "JumpPower", Title = "Jump Power", Min = 10, Max = 500, Default = 50, Step = 1, Callback = function(v)
+        Movement.JumpPower = v
+    end })
+    UI.AddToggle(MoveSec, { Id = "InfJump", Title = "Infinite Jump", Default = false, Callback = function(v)
+        Movement.InfJump = v
+    end })
+    UI.AddToggle(MoveSec, { Id = "NoClip", Title = "NoClip", Default = false, Callback = function(v)
+        Movement.NoClip = v
+        setNoClip(v)
+    end })
+    UI.AddToggle(MoveSec, { Id = "Fly", Title = "Fly", Default = false, Callback = function(v)
+        Movement.Fly = v
+        if not v then local h = H.getHumanoid(); if h then h.PlatformStand = false end end
+    end })
+    UI.AddSlider(MoveSec, { Id = "FlySpeed", Title = "Fly Speed", Min = 10, Max = 400, Default = 60, Step = 1, Callback = function(v)
+        Movement.FlySpeed = v
+    end })
+    UI.AddDropdown(TeleportSec, { Id = "WaypointTarget", Title = "Waypoint", Options = WaypointNames, Default = "Base" })
+    UI.AddButton(TeleportSec, { Title = "Teleport to Waypoint", Text = "Go", Callback = function()
+        task.spawn(function()
+            local position = H.resolveWaypoint(H.optionValue("WaypointTarget", "Base"))
+            if not position then H.notify("Waypoint", "Khong kha dung", "Warning", 3); return end
+            if not H.bypassMoveTo(position, nil, Config.BypassSpeed) then H.notify("Waypoint", "That bai", "Error", 3) end
+        end)
+    end })
+    local SysTab = UI.AddTab({ Id = "system", Title = "System" })
+    local SessionSysSec = UI.AddSection(SysTab, { Title = "Session" })
+    local PerformanceSec = UI.AddSection(SysTab, { Title = "Performance" })
+    local WebhookSec = UI.AddSection(SysTab, { Title = "Webhooks" })
+    local AboutSec = UI.AddSection(SysTab, { Title = "About" })
+    UI.AddToggle(SessionSysSec, { Id = "AntiAfk", Title = "Anti-AFK", Default = true })
+    UI.AddToggle(SessionSysSec, { Id = "AntiGameplayPause", Title = "No Gameplay Paused", Default = true,
+        Callback = function(v) H.applyAntiGameplayPause(v) end })
+    UI.AddToggle(SessionSysSec, { Id = "AutoReconnect", Title = "Auto Reconnect", Default = false })
+    UI.AddButton(SessionSysSec, { Title = "Rejoin Server", Text = "Rejoin", Callback = function() H.rejoinServer() end })
+    UI.AddToggle(PerformanceSec, { Id = "FpsBoost", Title = "FPS Boost", Default = false,
+        Callback = function(v) if v then H.enableFpsBoost() else H.disableFpsBoost() end end })
+    UI.AddToggle(PerformanceSec, { Id = "DisableRendering", Title = "Disable 3D Rendering", Default = false,
+        Callback = function(v) H.applyRendering(v) end })
+    UI.AddSlider(PerformanceSec, { Id = "FpsCap", Title = "FPS Cap", Min = 15, Max = 360, Default = 60, Step = 1, Suffix = " fps",
+        Callback = function(v) H.applyFpsCap(v) end })
+    UI.AddToggle(WebhookSec, { Id = "WebhookEnabled", Title = "Enable Webhooks", Default = false })
+    UI.AddInput(WebhookSec, { Id = "WebhookUrl", Title = "Webhook URL", Placeholder = "https://discord.com/api/webhooks/...", Default = "" })
+    UI.AddInput(WebhookSec, { Id = "WebhookPingId", Title = "Ping User ID", Placeholder = "123456789012345678", Default = "" })
+    UI.AddSlider(WebhookSec, { Id = "WebhookInterval", Title = "Summary Interval", Min = 1, Max = 180, Default = 15, Step = 1, Suffix = " min" })
+    UI.AddToggle(WebhookSec, { Id = "WebhookEggSpawns", Title = "List Spawned Eggs", Default = true })
+    UI.AddDropdown(WebhookSec, { Id = "WebhookRarities", Title = "Rarities", Options = RARITIES, Multi = true, Default = {} })
+    UI.AddToggle(WebhookSec, { Id = "WebhookDisconnectAlerts", Title = "Disconnect Alerts", Default = false })
+    UI.AddButton(WebhookSec, { Title = "Send Summary Now", Text = "Send", Callback = function()
+        task.spawn(function()
+            local sent = H.sendSummary()
+            H.notify("Webhook", sent and "Da gui" or "That bai", sent and "Success" or "Error", 3)
+        end)
+    end })
+    UI.AddParagraph(AboutSec, { Title = "Script", Content = "Zen Apex Hub - Merged Edition" })
+    UI.AddParagraph(AboutSec, { Title = "Discord", Content = DISCORD_LINK })
+    UI.AddButton(AboutSec, { Title = "Copy Discord", Text = "Copy", Callback = function()
+        pcall(function() setclipboard(DISCORD_LINK) end)
+        H.notify("Copied", "Da copy Discord", "Success", 3)
+    end })
+    UI.AddButton(AboutSec, { Title = "Unload Script", Text = "Unload", Callback = function() H.unload() end })
+end
+function H.refreshDashboard()
+    pcall(function()
+        if refs.stolenRow then refs.stolenRow:SetValue(tostring(SessionStolenEggs)) end
+        local save = H.getSave()
+        if save then
+            if refs.moneyRow then refs.moneyRow:SetValue(H.formatNumber(save.Money)) end
+            if refs.rebirthRow then refs.rebirthRow:SetValue(tostring(save.Rebirth or 0)) end
+        end
+    end)
+end
+function H.destroyUI()
+    pcall(function() screenGui:Destroy() end)
+    pcall(function() toggleGui:Destroy() end)
+end
+H.track(UserInputService.InputBegan:Connect(function(input, gp)
+    if not gp and input.KeyCode == Enum.KeyCode.End then H.unload() end
+end))
+if H.isOn("AntiGameplayPause") then H.applyAntiGameplayPause(true) end
+if H.isOn("FpsBoost") then H.enableFpsBoost() end
+H.applyFpsCap(H.optionValue("FpsCap", 60))
+task.delay(3, function()
+    pcall(function()
+        VisualPet.scanPetModels()
+        H.notify("Visual Pets", #VisualPet.petNames .. " pet tim thay", "Info", 4)
+    end)
+end)
+H.notify("Zen Apex Hub", "Da load thanh cong!", "Success", 5)
