@@ -830,10 +830,7 @@ function H.getBasePosition()
     if plot.PetArea then return plot.PetArea.Position end
     return nil
 end
-functi-- ============ PART 3/5: FEATURES CHÍNH ============
--- Place / Hatch / Sell / Fuse / Upgrade / ESP / ServerHop / Webhook / Performance
-
--- ============ PLACE EGG ============
+functi
 function H.getUnplacedEggUids()
     local save = H.getSave()
     local eggInventory = save and save.EggInventory
@@ -898,8 +895,6 @@ function H.runAutoPlaceEggs(forceRun)
     end
     return placedAny
 end
-
--- ============ HATCH ============
 function H.canAutoHatch() return H.isOn("AutoOpenReadyEggs") and not IsCarryingEgg end
 function H.runAutoOpenReadyEggs()
     local save = H.getSave()
@@ -925,8 +920,6 @@ function H.runAutoOpenReadyEggs()
     end
     return hatchedAny
 end
-
--- ============ SELL / FUSE ============
 function H.getPetItemData(serializedPet)
     if not AssetItemsApi.Deserialize then return nil end
     local ok, itemData = pcall(AssetItemsApi.Deserialize, serializedPet)
@@ -1132,8 +1125,6 @@ function H.runAutoFusePets(forceRun)
     H.netInvoke(Remotes.FuseMachine.START_FUSE)
     return true
 end
-
--- ============ EQUIP / CLAIM / UPGRADE ============
 function H.runAutoEquipBest()
     local now = Workspace:GetServerTimeNow()
     if now - LastEquipBestAt < 5 then return end
@@ -1182,8 +1173,6 @@ function H.runAutoUpgrades()
     end
     return upgraded
 end
-
--- ============ TREADMILL ============
 function H.getTreadmillStand()
     if not PlotApi.GetPlotData then return nil end
     local plot = PlotApi.GetPlotData()
@@ -1232,8 +1221,6 @@ function H.runAutoTreadmillTraining()
     TreadmillTrainingActive = true
     return true
 end
-
--- ============ WAYPOINT ============
 local WaypointNames = { "Base", "Pet Area", "Treadmill", "Fuse Machine", "Lobby Entry" }
 for _, zoneName in ipairs(AREA_ORDER) do table.insert(WaypointNames, zoneName) end
 function H.resolveWaypoint(name)
@@ -1245,8 +1232,6 @@ function H.resolveWaypoint(name)
     elseif name == "Lobby Entry" then return H.getEntryPosition() end
     return H.getZoneLaneCenter(name)
 end
-
--- ============ ESP ============
 function H.espDistanceLimit() return tonumber(H.optionValue("EspDistance", 2000)) or 2000 end
 function H.withinEspRange(position)
     local root = H.getRoot()
@@ -1264,7 +1249,466 @@ function H.ensureEspEntry(id, color)
     local existing = EspEntries[id]
     if existing then return existing end
     local anchor = Instance.new("Part")
-    anchor.Name = "Esp-- ============ PART 4/5: VISUAL PETS + MOVEMENT + SCHEDULER ============
+    anchor.Name = "EspAnchor"; anchor.Anchored = true; anchor.CanCollide = false
+    anchor.CanQuery = false; anchor.CanTouch = false; anchor.Transparency = 1
+    anchor.Size = Vector3.new(0.2, 0.2, 0.2); anchor.Parent = EspFolder
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "EspLabel"; billboard.AlwaysOnTop = true
+    billboard.Size = UDim2.fromOffset(220, 34); billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+    billboard.Adornee = anchor; billboard.Parent = anchor
+    local label = Instance.new("TextLabel")
+    label.Name = "Text"; label.BackgroundTransparency = 1; label.Size = UDim2.fromScale(1, 1)
+    label.Font = Enum.Font.GothamBold; label.TextSize = 13; label.TextStrokeTransparency = 0.4
+    label.TextColor3 = color; label.Parent = billboard
+    local entry = { anchor = anchor, billboard = billboard, label = label, highlight = nil }
+    EspEntries[id] = entry
+    return entry
+end
+function H.drawEspAt(id, position, text, color, adornee)
+    local entry = H.ensureEspEntry(id, color)
+    entry.anchor.CFrame = CFrame.new(position)
+    entry.label.Text = text; entry.label.TextColor3 = color
+    if adornee and adornee.Parent then
+        if not entry.highlight then
+            local highlight = Instance.new("Highlight")
+            highlight.FillTransparency = 0.6; highlight.OutlineTransparency = 0
+            highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            highlight.Parent = EspFolder; entry.highlight = highlight
+        end
+        entry.highlight.Adornee = adornee
+        entry.highlight.FillColor = color; entry.highlight.OutlineColor = color
+    elseif entry.highlight then entry.highlight:Destroy(); entry.highlight = nil end
+    EspSeenThisPass[id] = true
+end
+function H.releaseEsp(id)
+    local entry = EspEntries[id]; if not entry then return end
+    if entry.highlight then entry.highlight:Destroy() end
+    if entry.billboard then entry.billboard:Destroy() end
+    if entry.anchor then entry.anchor:Destroy() end
+    EspEntries[id] = nil
+end
+function H.clearAllEsp() for id in pairs(EspEntries) do H.releaseEsp(id) end end
+function H.collectEggEsp()
+    local showWorldEggs = H.isOn("EspWorldEggs")
+    local showCarriedEggs = H.isOn("EspCarriedEggs")
+    if not showWorldEggs and not showCarriedEggs then return end
+    for _, egg in ipairs(H.getAreaEggs()) do
+        local cframe = egg.BottomCFrame or egg.BoundsCFrame
+        if cframe then
+            local state = egg.State
+            local shouldShow = (state == "Slot" and showWorldEggs) or ((state == "Dropped" or state == "Carried") and showCarriedEggs)
+            if shouldShow and H.withinEspRange(cframe.Position) then
+                local rarity = H.resolveRarity(egg.AssetCategory)
+                local label = string.format("%s [%s]", H.assetName(egg.AssetCategory), tostring(rarity or "?"))
+                if state == "Dropped" or state == "Carried" then label = string.format("%s\n%s", label, tostring(state)) end
+                H.drawEspAt("egg_" .. egg.Uid, cframe.Position, label, H.espColorFor(rarity), nil)
+            end
+        end
+    end
+end
+function H.collectGuardEsp()
+    if not H.isOn("EspGuards") or not GuardAreasFolder then return end
+    for _, guardArea in ipairs(GuardAreasFolder:GetChildren()) do
+        local guard = guardArea:FindFirstChild("Guard")
+        local ok, pivot = pcall(function() return guard and guard:GetPivot() or nil end)
+        if ok and pivot and H.withinEspRange(pivot.Position) then
+            H.drawEspAt("guard_" .. guardArea.Name, pivot.Position,
+                string.format("Guard %s\n%s", guardArea.Name, tostring(guard:GetAttribute("GuardState") or "Idle")),
+                Color3.fromRGB(255, 140, 90), guard)
+        end
+    end
+end
+function H.collectPetEsp()
+    if not H.isOn("EspPets") then return end
+    local renderedAssets = Workspace:FindFirstChild("ClientRenderedAssets")
+    if not renderedAssets then return end
+    local save = H.getSave()
+    local inventory = save and save.Inventory or {}
+    local runtimeByUid = {}
+    pcall(function()
+        if AssetRosterApi.GetRuntimeSnapshot then
+            local snapshot = AssetRosterApi.GetRuntimeSnapshot() or {}
+            for _, group in pairs(snapshot) do
+                if typeof(group) == "table" and typeof(group.Records) == "table" then
+                    for uid, record in pairs(group.Records) do runtimeByUid[uid] = record end
+                end
+            end
+        end
+    end)
+    for _, renderedPet in ipairs(renderedAssets:GetChildren()) do
+        local uid = renderedPet:GetAttribute("UID")
+        local ok, pivot = pcall(function() return renderedPet:GetPivot() end)
+        if typeof(uid) == "string" and ok and pivot and H.withinEspRange(pivot.Position) then
+            local category, moneyPerSecond = nil, nil
+            local savedPet = inventory[uid]
+            if typeof(savedPet) == "table" then category = savedPet.Category end
+            local runtimeRecord = runtimeByUid[uid]
+            if typeof(runtimeRecord) == "table" then
+                if not category and runtimeRecord.ItemData then category = runtimeRecord.ItemData.Category end
+                moneyPerSecond = tonumber(runtimeRecord.MoneyPerSecond)
+            end
+            local rarity = H.resolveRarity(category)
+            local label = string.format("%s [%s]", H.assetName(category), tostring(rarity or "?"))
+            if moneyPerSecond then label = string.format("%s\n%s/s", label, H.formatNumber(moneyPerSecond)) end
+            H.drawEspAt("pet_" .. renderedPet.Name, pivot.Position, label, H.espColorFor(rarity), renderedPet)
+        end
+    end
+end
+function H.collectPlayerEsp()
+    if not H.isOn("EspPlayers") then return end
+    local localRoot = H.getRoot()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local character = player.Character
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            if root and H.withinEspRange(root.Position) then
+                local distance = localRoot and (localRoot.Position - root.Position).Magnitude or 0
+                H.drawEspAt("player_" .. player.Name, root.Position,
+                    string.format("%s\n%d studs", player.DisplayName, math.floor(distance)),
+                    Color3.fromRGB(120, 190, 255), character)
+            end
+        end
+    end
+end
+function H.collectMachineEsp()
+    if not H.isOn("EspMachines") then return end
+    local objects = Workspace:FindFirstChild("__OBJECTS")
+    local machines = objects and objects:FindFirstChild("Machines")
+    if not machines then return end
+    for _, machine in ipairs(machines:GetChildren()) do
+        local ok, pivot = pcall(function() return machine:GetPivot() end)
+        if ok and pivot and H.withinEspRange(pivot.Position) then
+            H.drawEspAt("machine_" .. machine.Name, pivot.Position, machine.Name, Color3.fromRGB(230, 200, 120), machine)
+        end
+    end
+end
+function H.collectPlotEsp()
+    if not H.isOn("EspPlots") then return end
+    local plots = Workspace:FindFirstChild("Plots")
+    if not plots then return end
+    for _, plot in ipairs(plots:GetChildren()) do
+        local anchor = plot:FindFirstChild("PlotSign") or plot:FindFirstChild("CenterPoint")
+        if anchor and anchor:IsA("BasePart") and H.withinEspRange(anchor.Position) then
+            local ownerUserId = nil
+            pcall(function()
+                if PlotApi.GetSlotOwner then ownerUserId = PlotApi.GetSlotOwner(tonumber(plot.Name)) end
+            end)
+            local ownerText = "Empty"
+            local numericUserId = tonumber(ownerUserId)
+            if numericUserId then
+                local owner = Players:GetPlayerByUserId(numericUserId)
+                if owner then
+                    ownerText = owner.DisplayName
+                    if owner == LocalPlayer then ownerText = ownerText .. " (You)" end
+                else ownerText = "User " .. tostring(numericUserId) end
+            end
+            H.drawEspAt("plot_" .. plot.Name, anchor.Position,
+                string.format("Plot %s\n%s", plot.Name, ownerText),
+                Color3.fromRGB(200, 170, 255), nil)
+        end
+    end
+end
+function H.runEsp()
+    H.clearTable(EspSeenThisPass)
+    H.collectEggEsp()
+    H.collectGuardEsp()
+    H.collectPetEsp()
+    H.collectPlayerEsp()
+    H.collectMachineEsp()
+    H.collectPlotEsp()
+    for id in pairs(EspEntries) do
+        if not EspSeenThisPass[id] then H.releaseEsp(id) end
+    end
+end
+function H.rememberVisited(serverId)
+    if typeof(serverId) ~= "string" or serverId == "" then return end
+    if H.countTable(VisitedServerIds) >= 300 then H.clearTable(VisitedServerIds) end
+    VisitedServerIds[serverId] = true
+end
+H.rememberVisited(tostring(game.JobId))
+H.track(TeleportService.TeleportInitFailed:Connect(function(player, result, errorMessage)
+    if player == LocalPlayer then LastTeleportFailure = tostring(errorMessage or result) end
+end))
+function H.fetchServerPage(cursor)
+    local url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&excludeFullGames=true&limit=100", game.PlaceId)
+    if cursor then url = url .. "&cursor=" .. cursor end
+    local ok, body = pcall(function() return game:HttpGet(url) end)
+    if not ok or typeof(body) ~= "string" then return nil end
+    local decodedOk, page = pcall(function() return HttpService:JSONDecode(body) end)
+    if not decodedOk or typeof(page) ~= "table" or typeof(page.data) ~= "table" then return nil end
+    return page
+end
+function H.pickHopTargets()
+    local cursor = nil
+    local candidates = {}
+    for _ = 1, 4 do
+        local page = H.fetchServerPage(cursor)
+        if not page then break end
+        for _, server in ipairs(page.data) do
+            if typeof(server) == "table" and typeof(server.id) == "string"
+                and server.id ~= game.JobId and not VisitedServerIds[server.id] then
+                local playing = tonumber(server.playing) or 0
+                local maxPlayers = tonumber(server.maxPlayers) or 0
+                if maxPlayers > 0 and playing < maxPlayers then
+                    table.insert(candidates, { id = server.id, playing = playing })
+                end
+            end
+        end
+        cursor = typeof(page.nextPageCursor) == "string" and page.nextPageCursor or nil
+        if not cursor or #candidates >= 40 then break end
+        task.wait(0.25)
+    end
+    table.sort(candidates, function(a, b) return a.playing < b.playing end)
+    return candidates
+end
+function H.tryTeleportTo(serverId)
+    LastTeleportFailure = nil
+    local started = pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, serverId, LocalPlayer) end)
+    if not started then return false end
+    H.waitFor(20, 0.25, function() return LastTeleportFailure ~= nil or (not running) end)
+    if LastTeleportFailure then return false end
+    return true
+end
+function H.serverHop(reason)
+    if ServerHopInProgress or os.clock() < ServerHopRetryAfter then return false end
+    ServerHopInProgress = true
+    local targets = H.pickHopTargets()
+    if typeof(targets) ~= "table" or #targets == 0 then
+        ServerHopRetryAfter = os.clock() + 30
+        ServerHopInProgress = false
+        return false
+    end
+    for attempt = 1, 3 do
+        if attempt > 1 then
+            targets = H.pickHopTargets()
+            if typeof(targets) ~= "table" or #targets == 0 then
+                ServerHopRetryAfter = os.clock() + 10
+                ServerHopInProgress = false
+                return false
+            end
+        end
+        for index = 1, math.min(#targets, 10) do
+            if not running then ServerHopInProgress = false; return false end
+            local target = targets[index]
+            H.rememberVisited(target.id)
+            if H.tryTeleportTo(target.id) then
+                ServerHopInProgress = false
+                return true
+            end
+            task.wait(0.5)
+        end
+    end
+    ServerHopRetryAfter = os.clock() + 10
+    ServerHopInProgress = false
+    return false
+end
+function H.runServerHop()
+    if IsCarryingEgg or ServerHopInProgress then return end
+    local mode = H.optionValue("HopMode", ServerHopModes[1])
+    local threshold = tonumber(H.optionValue("HopValue", 15)) or 15
+    local now = os.clock()
+    if mode == "Timed Interval" then
+        if now - HopIntervalStartedAt >= threshold * 60 then H.serverHop("Interval reached") end
+        return
+    end
+    if mode == "After Steal Count" then
+        if SessionStolenEggs >= threshold then H.serverHop(string.format("Stole %d eggs", SessionStolenEggs)) end
+        return
+    end
+    if H.pickStealTarget() ~= nil then NoMatchingEggsSince = 0; return end
+    if NoMatchingEggsSince == 0 then NoMatchingEggsSince = now
+    elseif now - NoMatchingEggsSince >= threshold then
+        NoMatchingEggsSince = 0
+        H.serverHop("No matching eggs in this server")
+    end
+end
+function H.rejoinServer()
+    local ok = pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
+    if not ok then pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end) end
+end
+function H.webhookPing()
+    local numericId = tostring(H.optionValue("WebhookPingId", "") or ""):gsub("%D", "")
+    if numericId == "" then return nil end
+    return string.format("<@%s>", numericId)
+end
+function H.httpPost(payload)
+    local requestFn = (syn and syn.request) or (http and http.request) or http_request or request
+    if typeof(requestFn) ~= "function" then return false end
+    local webhookUrl = tostring(H.optionValue("WebhookUrl", "") or "")
+    if webhookUrl == "" then return false end
+    local encodedBody
+    local encoded = pcall(function() encodedBody = HttpService:JSONEncode(payload) end)
+    if not encoded then return false end
+    return pcall(requestFn, {
+        Url = webhookUrl, Method = "POST",
+        Headers = { ["Content-Type"] = "application/json" },
+        Body = encodedBody,
+    })
+end
+function H.sendWebhookEmbed(embed, includePing)
+    if not H.isOn("WebhookEnabled") then return false end
+    local payload = { username = "Zen Apex Hub", embeds = { embed } }
+    if includePing then payload.content = H.webhookPing() end
+    return H.httpPost(payload)
+end
+function H.embedField(name, value, inline) return { name = name, value = value, inline = inline ~= false } end
+function H.trackWebhookEvents()
+    local save = H.getSave()
+    if not save then return end
+    if not WebhookTrackerInitialized then
+        WebhookTrackerInitialized = true
+        for uid in pairs(save.Inventory or {}) do KnownInventoryUids[uid] = true end
+        for _, egg in ipairs(H.getAreaEggs()) do KnownWorldEggUids[egg.Uid] = true end
+        LastRebirthSnapshot = tonumber(save.Rebirth) or 0
+        LastStealCountSnapshot = SessionStolenEggs
+        return
+    end
+    SummaryStolenEggs = SummaryStolenEggs + math.max(0, SessionStolenEggs - LastStealCountSnapshot)
+    LastStealCountSnapshot = SessionStolenEggs
+    for uid in pairs(save.Inventory or {}) do
+        if KnownInventoryUids[uid] == nil then
+            KnownInventoryUids[uid] = true
+            SummaryPetsObtained = SummaryPetsObtained + 1
+        end
+    end
+    local rebirths = tonumber(save.Rebirth) or 0
+    if LastRebirthSnapshot and rebirths > LastRebirthSnapshot then
+        SummaryRebirths = SummaryRebirths + rebirths - LastRebirthSnapshot
+    end
+    LastRebirthSnapshot = rebirths
+    local currentWorldEggs = {}
+    for _, egg in ipairs(H.getAreaEggs()) do
+        currentWorldEggs[egg.Uid] = true
+        if KnownWorldEggUids[egg.Uid] == nil then
+            KnownWorldEggUids[egg.Uid] = true
+            local rarity = H.resolveRarity(egg.AssetCategory)
+            if H.isOn("WebhookEggSpawns") and H.selectionAllows("WebhookRarities", rarity or "") and #SpawnedEggLog < 60 then
+                table.insert(SpawnedEggLog, {
+                    rank = RarityWeight[rarity or ""] or 0,
+                    order = #SpawnedEggLog,
+                    text = string.format("**%s** `%s` in %s", H.assetName(egg.AssetCategory), tostring(rarity or "?"), tostring(egg.AreaId)),
+                })
+            end
+        end
+    end
+    for uid in pairs(KnownWorldEggUids) do
+        if not currentWorldEggs[uid] then KnownWorldEggUids[uid] = nil end
+    end
+end
+function H.buildSummaryEmbed()
+    local save = H.getSave()
+    local fields = {}
+    if save then
+        table.insert(fields, H.embedField("Money", "`" .. H.formatNumber(save.Money) .. "`"))
+        table.insert(fields, H.embedField("Speed Power", "`" .. H.formatNumber(save.SpeedPower) .. "`"))
+        table.insert(fields, H.embedField("Rebirth", "`" .. tostring(save.Rebirth or 0) .. "`"))
+        table.insert(fields, H.embedField("Pets Owned", "`" .. tostring(H.countTable(save.Inventory)) .. "`"))
+    end
+    table.insert(fields, H.embedField("Since Last Summary",
+        string.format("Eggs stolen: **%d**\nPets obtained: **%d**\nRebirths: **%d**", SummaryStolenEggs, SummaryPetsObtained, SummaryRebirths), false))
+    return {
+        author = { name = "Zen Apex Hub" },
+        title = "Session Summary",
+        description = string.format("**Player** `%s`\n**Server** `%s`\n**Runtime** `%s`",
+            LocalPlayer.Name, DisplayJobId, H.formatElapsed(os.clock() - SessionStartedAt)),
+        color = 5793266, fields = fields,
+        footer = { text = "Zen Apex Hub | " .. DISCORD_LINK },
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    }
+end
+H.sendSummary = function()
+    local sent = H.sendWebhookEmbed(H.buildSummaryEmbed(), true)
+    if sent then
+        SummaryStolenEggs, SummaryPetsObtained, SummaryRebirths = 0, 0, 0
+        H.clearTable(SpawnedEggLog); H.clearTable(ObtainedEggLog)
+    end
+    return sent
+end
+function H.runWebhookSummary()
+    local interval = (tonumber(H.optionValue("WebhookInterval", 15)) or 15) * 60
+    if os.clock() - LastWebhookSummaryAt < interval then return false end
+    LastWebhookSummaryAt = os.clock()
+    return H.sendSummary()
+end
+function H.applyAntiGameplayPause(enabled)
+    pcall(function() GuiService:SetGameplayPausedNotificationEnabled(not enabled) end)
+    pcall(function()
+        local notification = CoreGui:FindFirstChild("RobloxNetworkPauseNotification")
+        if notification then notification.Enabled = not enabled end
+    end)
+    if enabled then
+        pcall(function()
+            if sethiddenproperty then sethiddenproperty(LocalPlayer, "GameplayPaused", false)
+            else LocalPlayer.GameplayPaused = false end
+        end)
+    end
+end
+function H.applyRendering(disableRendering)
+    pcall(function() RunService:Set3dRenderingEnabled(not disableRendering) end)
+    RenderingDisabled = disableRendering
+end
+local FpsEffectClasses = { ParticleEmitter = true, Trail = true, Smoke = true, Fire = true, Sparkles = true }
+function H.setEffectEnabled(inst, enabled) pcall(function() inst.Enabled = enabled end) end
+function H.enableFpsBoost()
+    if FpsBoostSnapshot then return end
+    local terrain = Workspace:FindFirstChildOfClass("Terrain")
+    local qualityLevel = nil
+    pcall(function() qualityLevel = settings().Rendering.QualityLevel end)
+    FpsBoostSnapshot = {
+        QualityLevel = qualityLevel, GlobalShadows = Lighting.GlobalShadows, FogEnd = Lighting.FogEnd,
+        Terrain = terrain,
+        WaterWaveSize = terrain and terrain.WaterWaveSize or nil,
+        WaterReflectance = terrain and terrain.WaterReflectance or nil,
+        Effects = {},
+    }
+    pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+    Lighting.GlobalShadows = false; Lighting.FogEnd = 1000000
+    if terrain then terrain.WaterWaveSize = 0; terrain.WaterReflectance = 0 end
+    for _, descendant in ipairs(Workspace:GetDescendants()) do
+        if FpsEffectClasses[descendant.ClassName] and descendant.Enabled then
+            table.insert(FpsBoostSnapshot.Effects, descendant)
+            H.setEffectEnabled(descendant, false)
+        end
+    end
+    FpsDescendantAddedConnection = Workspace.DescendantAdded:Connect(function(descendant)
+        if FpsEffectClasses[descendant.ClassName] and H.isOn("FpsBoost") then H.setEffectEnabled(descendant, false) end
+    end)
+end
+function H.disableFpsBoost()
+    if FpsDescendantAddedConnection then FpsDescendantAddedConnection:Disconnect(); FpsDescendantAddedConnection = nil end
+    local snapshot = FpsBoostSnapshot; if not snapshot then return end
+    FpsBoostSnapshot = nil
+    if snapshot.QualityLevel then pcall(function() settings().Rendering.QualityLevel = snapshot.QualityLevel end) end
+    Lighting.GlobalShadows = snapshot.GlobalShadows; Lighting.FogEnd = snapshot.FogEnd
+    if snapshot.Terrain and snapshot.Terrain.Parent then
+        snapshot.Terrain.WaterWaveSize = snapshot.WaveSize or snapshot.WaterWaveSize
+        snapshot.Terrain.WaterReflectance = snapshot.WaterReflectance
+    end
+    for _, effect in ipairs(snapshot.Effects) do H.setEffectEnabled(effect, true) end
+end
+function H.applyFpsCap(value)
+    local setCap = setfpscap or (syn and syn.set_fps_cap)
+    if typeof(setCap) ~= "function" then return false end
+    return pcall(setCap, math.clamp(tonumber(value) or 60, 15, 360))
+end
+local AutomationJobs = {
+    ["Auto Steal Egg"] = { Ready = H.canAutoSteal, Run = H.runAutoSteal, Interval = 0.25 },
+    ["Auto Place Egg"] = { Ready = H.canAutoPlace, Run = H.runAutoPlaceEggs, Interval = 0.45 },
+    ["Auto Hatch"] = { Ready = H.canAutoHatch, Run = H.runAutoOpenReadyEggs, Interval = 0.55 },
+    ["Auto Treadmill"] = { Ready = H.canAutoTreadmill, Run = H.runAutoTreadmillTraining, Interval = 1.2 },
+}
+function H.priorityOrder()
+    local used, order = {}, {}
+    for _, optionName in ipairs(PrioritySlotOptionNames) do
+        local jobName = H.optionValue(optionName, nil)
+        if AutomationJobs[jobName] and not used[jobName] then used[jobName] = true; table.insert(order, jobName) end
+    end
+    for _, jobName in ipairs(PriorityTaskNames) do
+        if not used[jobName] then used[jobName] = true; table.insert(order, jobName) end
+    end
+    return order
+end
+-- ============ PART 4/5: VISUAL PETS + MOVEMENT + SCHEDULER ============
 
 -- ============ VISUAL PETS (từ ZenHubX / ThanhDuy) ============
 local VisualPet = {
@@ -1656,7 +2100,8 @@ H.VisualPet = VisualPet
 H.Movement = Movement
 H.SchedulerAt = SchedulerAt
 
--- Kết thúc Part 4/5local COLORS = {
+-- Kết thúc Part 4/5
+local COLORS = {
     panelBg       = Color3.fromRGB(12, 12, 14),
     panelBg2      = Color3.fromRGB(18, 18, 22),
     panelBorder   = Color3.fromRGB(40, 40, 46),
@@ -2134,7 +2579,8 @@ function UI.AddSlider(parent, opts)
         end
     end))
     return bar
-endfunction UI.AddDropdown(parent, opts)
+end
+function UI.AddDropdown(parent, opts)
     local isMulti = opts.Multi == true
     local row = makeRow(parent, 34)
     local label = Instance.new("TextLabel", row)
@@ -2434,7 +2880,8 @@ function H.notify(title, content, variant, duration)
         note:Destroy()
     end)
     return note
-endlocal refs = {}
+end
+local refs = {}
 do
     local HomeTab = UI.AddTab({ Id = "home", Title = "Home" })
     local SessionSec = UI.AddSection(HomeTab, { Title = "Session" })
