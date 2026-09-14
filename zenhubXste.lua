@@ -4,7 +4,8 @@
     Discord: https://discord.gg/vggkAdBcuJ
     TikTok: zenhub.z
     Anti-Kick Edition + Extras
-    [MOD] Forest grab → guard ragdoll (step 0) + Desync Guard + Anti-Knock
+    [MOD] Forest grab → wait guard ragdoll → tele target → return
+    [MOD2] Anti-Ragdoll/Knock integration + Auto-tele Forest between loops
 --]]
 
 -- ============================================================
@@ -29,9 +30,6 @@ if type(table.find) ~= "function" then
         for i = tonumber(init) or 1, #t do if t[i] == v then return i end end
         return nil
     end
-end
-if type(table.clear) ~= "function" then
-    function table.clear(t) for k in pairs(t) do t[k] = nil end end
 end
 
 local genv = _G_ENV
@@ -469,9 +467,8 @@ local BYPASS_SPEED = 700
 local BASE_RETURN_ARRIVE = 4
 local STEAL_HOLD_TIME = 3
 local StealConfig = { GrabDelay = 0.55, ReturnPace = 0.12, ArriveDistance = 1.35, MoveTimeout = 14 }
-local RAGDOLL_WAIT_TIMEOUT = 10
+local RAGDOLL_WAIT_TIMEOUT = 8
 local RAGDOLL_END_TIMEOUT  = 2
-local STEP0_MAX_RETRY      = 3
 
 local conns = {}
 local CurrentJobId = tostring(game.JobId)
@@ -508,13 +505,6 @@ local LastStealCountSnapshot = 0
 local SummaryStolenEggs, SummaryPetsObtained, SummaryRebirths = 0, 0, 0
 local SpawnedEggLog, ObtainedEggLog = {}, {}
 local EspEntries, EspSeenThisPass = {}, {}
-
--- [MOD] Anti-Knock / Desync / Step0 states
-local AntiKnockEnabled       = true    -- mặc định bật để chống knock khi farm
-local DesyncGuardEnabled     = false   -- tự bật khi farm
-local StepZeroActive         = false   -- đang ở bước 0 (cho phép ragdoll)
-local StepZeroPhaseActive    = false   -- đang thực thi bước 0
-local IsBypassing            = false   -- đang thay humanoid
 
 local VisitedServerIds = {}
 if getgenv then
@@ -561,108 +551,6 @@ local function safePivot(root, cf)
     LastCFrameAt = now
     pcall(function() root.CFrame = cf end)
 end
-
--- ============================================================
--- [MOD] ANTI-KNOCK & DESYNC GUARD (lấy từ file WindUI, cải tiến)
--- ============================================================
--- Áp CustomPhysicalProperties + state control cho nhân vật
-local function applyCharacterAntiKnock(char, hum, hrp)
-    if not char or not hum or not hrp then return end
-    pcall(function()
-        hrp.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5, 100, 100)
-    end)
-    pcall(function()
-        if not StepZeroActive then
-            hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-            hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-            hum:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
-            hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
-        end
-    end)
-end
-
--- Loop anti-knock (Stepped): giữ nhân vật ổn định, chống văng
-H.track(RunService.Stepped:Connect(function()
-    if not running then return end
-    if not AntiKnockEnabled and not DesyncGuardEnabled then return end
-    if IsBypassing then return end
-    local char = LocalPlayer.Character
-    if not char or not char.Parent then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum then return end
-
-    applyCharacterAntiKnock(char, hum, hrp)
-
-    -- Nếu KHÔNG ở bước 0 → ép chống ragdoll/knock mạnh
-    if not StepZeroActive then
-        hum.PlatformStand = false
-        local state = hum:GetState()
-        if state == Enum.HumanoidStateType.Ragdoll
-        or state == Enum.HumanoidStateType.FallingDown
-        or state == Enum.HumanoidStateType.Physics then
-            pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
-        end
-
-        for _, v in ipairs(char:GetDescendants()) do
-            if v:IsA("Motor6D") and not v.Enabled then
-                v.Enabled = true
-            end
-        end
-
-        -- Clamp Y velocity để chống nẩy cao
-        local vel = hrp.AssemblyLinearVelocity
-        if vel.Y > 30 then
-            hrp.AssemblyLinearVelocity = Vector3.new(vel.X, 0, vel.Z)
-        end
-    end
-
-    -- Luôn giới hạn vận tốc để chống desync/bay xa
-    local vel = hrp.AssemblyLinearVelocity
-    local speed = vel.Magnitude
-    local maxSpeed
-    if StepZeroActive then
-        maxSpeed = 80  -- khi bước 0, cho phép ragdoll rơi nhẹ
-    else
-        maxSpeed = MAX_SAFE_SPEED * 1.2
-    end
-    if speed > maxSpeed then
-        local targetVel = vel.Unit * maxSpeed
-        if StepZeroActive then
-            targetVel = Vector3.new(vel.X * 0.35, math.min(vel.Y, 25), vel.Z * 0.35)
-        end
-        hrp.AssemblyLinearVelocity = targetVel
-    end
-end))
-
--- Loop RenderStepped desync: xóa constraint lạ, camera lock, giữ vị trí ổn định
-local LastDesyncCheckPos = nil
-H.track(RunService.RenderStepped:Connect(function()
-    if not running then return end
-    if not DesyncGuardEnabled then return end
-    if IsBypassing then return end
-    local char = LocalPlayer.Character
-    if not char or not char.Parent then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum then return end
-
-    -- Xóa constraint gây knock
-    for _, obj in ipairs(char:GetDescendants()) do
-        if obj:IsA("BallSocketConstraint")
-            or obj:IsA("RopeConstraint")
-            or obj:IsA("BodyVelocity")
-            or obj:IsA("BodyThrust")
-            or obj:IsA("BodyAngularVelocity") then
-            pcall(function() obj:Destroy() end)
-        end
-    end
-
-    -- Nếu đang mang trứng hoặc không ở bước 0, đảm bảo đứng vững
-    if not StepZeroActive then
-        if hum.PlatformStand then hum.PlatformStand = false end
-    end
-end))
 
 -- ============================================================
 -- GAME HELPERS
@@ -863,7 +751,6 @@ function H.prepareStealHumanoid()
     local camera = Workspace.CurrentCamera
     local cameraCFrame = camera and camera.CFrame or nil
 
-    IsBypassing = true
     local newHumanoid = nil
     local ok, clone = pcall(function()
         humanoid.Archivable = true
@@ -889,20 +776,11 @@ function H.prepareStealHumanoid()
         newHumanoid.PlatformStand = false
         newHumanoid.WalkSpeed = H.stealSpeed()
         newHumanoid.AutoRotate = true
-        -- Áp anti-knock ngay khi tạo
-        local hrp = character:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            pcall(function()
-                hrp.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5, 100, 100)
-            end)
-        end
         pcall(function()
-            if not StepZeroActive then
-                newHumanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-                newHumanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-                newHumanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
-                newHumanoid:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
-            end
+            newHumanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+            newHumanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+            newHumanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
+            newHumanoid:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
         end)
     end
 
@@ -913,8 +791,6 @@ function H.prepareStealHumanoid()
         end)
     end
 
-    task.wait(0.05)
-    IsBypassing = false
     return newHumanoid
 end
 
@@ -928,7 +804,6 @@ function H.isRagdoll()
     return st == Enum.HumanoidStateType.Ragdoll
         or st == Enum.HumanoidStateType.FallingDown
         or st == Enum.HumanoidStateType.Physics
-        or hum.PlatformStand == true
 end
 
 function H.waitForRagdoll(timeout)
@@ -972,98 +847,104 @@ function H.pickRandomForestEggRecord()
     return candidates[math.random(1, #candidates)]
 end
 
--- Reset humanoid lên trạng thái đứng
-function H.resetHumanoidStable()
-    local hum = H.getHumanoid()
+-- ============================================================
+-- [MOD2] ANTI-RAGDOLL / ANTI-KNOCK (từ file script steal zenhubX.txt)
+-- Ngăn chặn bị desy (knock bay xa/cao) khi guard đánh.
+-- Chỉ kích hoạt khi Farm (steal) đang bật — để nhận ragdoll nhưng giới hạn quỹ đạo.
+-- ============================================================
+local AntiKnock = {
+    Enabled = false,
+    -- giới hạn vận tốc ngang / dọc
+    MaxHorizontal = 25,   -- studs/s tối đa theo XZ
+    MaxVertical   = 8,    -- studs/s tối đa theo Y (không cho bay cao)
+    -- khoảng cách tối đa được phép xê dịch so với vị trí neo trong 1 khung
+    MaxDriftPerTick = 3,
+    AnchorCF = nil,
+    AnchorSetAt = 0,
+    ResetAfter = 1.2,
+}
+
+function AntiKnock.SetAnchor(position)
+    AntiKnock.AnchorCF = CFrame.new(position)
+    AntiKnock.AnchorSetAt = os.clock()
+end
+
+function AntiKnock.ClearAnchor()
+    AntiKnock.AnchorCF = nil
+end
+
+-- Reset constraint kéo lê & giới hạn vận tốc mỗi frame
+H.track(RunService.Stepped:Connect(function()
+    if not running or not AntiKnock.Enabled then return end
+    local ch = LocalPlayer.Character
     local hrp = H.getRoot()
-    if hum then
-        pcall(function()
-            hum.PlatformStand = false
-            hum.Sit = false
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end)
-        pcall(function()
-            hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-            hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-            hum:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
-            hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
-        end)
-    end
-    if hrp then
-        pcall(function()
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-            hrp.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5, 100, 100)
-        end)
-    end
-end
+    local hum = H.getHumanoid()
+    if not ch or not hrp or not hum then return end
 
--- Teleport về chính giữa base
-function H.teleportToBaseCenter()
-    local basePos = H.getBasePosition()
-    if not basePos then return false end
-    local root = H.getRoot()
-    if not root then return false end
-    local y = H.groundedY(basePos.X, basePos.Z, basePos.Y + 3)
-    H.placeRoot(root, CFrame.new(basePos.X, y, basePos.Z))
-    return true
-end
+    -- 1. Bật lại Motor6D nếu bị vô hiệu hóa (do ragdoll)
+    for _, v in ipairs(ch:GetDescendants()) do
+        if v:IsA("Motor6D") and not v.Enabled then
+            v.Enabled = true
+        end
+    end
+
+    -- 2. Xóa constraint làm character bay loạn
+    for _, obj in ipairs(ch:GetDescendants()) do
+        if obj:IsA("Constraint") or obj:IsA("BallSocketConstraint")
+        or obj:IsA("RopeConstraint") or obj:IsA("BodyVelocity")
+        or obj:IsA("BodyThrust") or obj:IsA("VectorForce") then
+            pcall(function() obj:Destroy() end)
+        end
+    end
+
+    -- 3. Nếu đang ở state ragdoll thì đưa dần về GettingUp (nhưng vẫn giữ 1 nhịp để nhận diện)
+    local st = hum:GetState()
+    if st == Enum.HumanoidStateType.Ragdoll
+    or st == Enum.HumanoidStateType.FallingDown
+    or st == Enum.HumanoidStateType.Physics then
+        hum.PlatformStand = false
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+    end
+
+    -- 4. Giới hạn vận tốc để không bị nẩy xa/cao
+    local vel = hrp.AssemblyLinearVelocity
+    local horizontal = Vector3.new(vel.X, 0, vel.Z)
+    if horizontal.Magnitude > AntiKnock.MaxHorizontal then
+        horizontal = horizontal.Unit * AntiKnock.MaxHorizontal
+    end
+    local vy = math.clamp(vel.Y, -AntiKnock.MaxVertical, AntiKnock.MaxVertical)
+    hrp.AssemblyLinearVelocity = Vector3.new(horizontal.X, vy, horizontal.Z)
+    hrp.AssemblyAngularVelocity = Vector3.zero
+
+    -- 5. Nếu có anchor (dùng trong bước warm-up Forest), kéo về gần anchor nếu bị văng quá xa
+    if AntiKnock.AnchorCF then
+        local age = os.clock() - AntiKnock.AnchorSetAt
+        if age > AntiKnock.ResetAfter then
+            AntiKnock.AnchorCF = nil
+        else
+            local anchorPos = AntiKnock.AnchorCF.Position
+            local curPos = hrp.Position
+            local dx = curPos.X - anchorPos.X
+            local dz = curPos.Z - anchorPos.Z
+            local horizontalDist = math.sqrt(dx * dx + dz * dz)
+            if horizontalDist > AntiKnock.MaxDriftPerTick * 4 then
+                -- kéo về gần anchor (giữ Y theo ground)
+                local ny = H.groundedY(anchorPos.X, anchorPos.Z, anchorPos.Y)
+                H.placeRoot(hrp, CFrame.new(anchorPos.X, ny, anchorPos.Z))
+            end
+        end
+    end
+end))
 
 -- ============================================================
--- [MOD] stealEgg: step 0 → tele target → grab → hold → return
+-- [MOD] stealEgg: 
+--   B0: Forest — nhặt 1 quả trứng ngẫu nhiên → chờ quái đánh → ragdoll
+--   B1: Tele tới trứng đích
+--   B2: Grab
+--   B3: Hold confirm
+--   B4: Đi bộ về base (KHÔNG tele)
+--   B5: Sau khi về base, tele lên base center và loop lại B0
 -- ============================================================
-local function runStepZeroOnce()
-    local forestRecord = H.pickRandomForestEggRecord()
-    if not forestRecord then return false end
-    local forestSlot = H.findEggSlotInstance(forestRecord.Uid)
-    if not forestSlot then return false end
-    local forestPos = H.getSlotEggPosition(forestSlot)
-    if not forestPos then return false end
-
-    -- Bật cờ cho phép ragdoll
-    StepZeroActive = true
-    StepZeroPhaseActive = true
-
-    -- Tele tới trứng Forest
-    local root = H.getRoot()
-    if root then
-        local fy = H.groundedY(forestPos.X, forestPos.Z, forestPos.Y)
-        H.placeRoot(root, CFrame.new(forestPos.X, fy, forestPos.Z))
-    end
-    task.wait(0.1)
-
-    -- Nhặt trứng Forest → guard chú ý → đánh
-    local grabDeadline = os.clock() + 2.5
-    while running and H.stealingEnabled() and os.clock() < grabDeadline do
-        if IsCarryingEgg then break end
-        H.tryCarryEgg(forestSlot)
-        if IsCarryingEgg then break end
-        task.wait(0.05)
-    end
-
-    -- Chờ guard đánh → ragdoll
-    local gotRagdoll = H.waitForRagdoll(RAGDOLL_WAIT_TIMEOUT)
-
-    -- Chờ hết ragdoll
-    H.waitRagdollEnd(RAGDOLL_END_TIMEOUT)
-
-    -- Drop trứng Forest
-    if IsCarryingEgg and EggApi.RequestDropHeldAreaEgg then
-        pcall(function() EggApi.RequestDropHeldAreaEgg("PlayerRequest") end)
-        H.waitFor(1.5, 0.05, function() return IsCarryingEgg == false end)
-    end
-
-    -- Reset humanoid về trạng thái đứng
-    H.resetHumanoidStable()
-    task.wait(0.15)
-
-    -- Tắt cờ cho phép ragdoll
-    StepZeroActive = false
-    StepZeroPhaseActive = false
-
-    return gotRagdoll or true
-end
-
 function H.stealEgg(slotEgg)
     H.swapStealHumanoid()
     if not H.prepareStealHumanoid() then return false end
@@ -1072,29 +953,65 @@ function H.stealEgg(slotEgg)
     if not root or not targetPosition then return false end
     if not H.stealingEnabled() then return false end
 
+    -- Bật AntiKnock trong toàn bộ quá trình steal (đặc biệt là bước 0)
+    AntiKnock.Enabled = true
+
     -- ========================================================
-    -- BƯỚC 0: FOREST WARM-UP (có retry nếu không chạy)
+    -- BƯỚC 0: FOREST WARM-UP — nhặt trứng forest → chờ guard đánh ragdoll
     -- ========================================================
-    local step0Success = false
-    for attempt = 1, STEP0_MAX_RETRY do
-        if not running or not H.stealingEnabled() then break end
-        if runStepZeroOnce() then
-            step0Success = true
-            break
+    do
+        local forestRecord = H.pickRandomForestEggRecord()
+        if forestRecord then
+            local forestSlot = H.findEggSlotInstance(forestRecord.Uid)
+            if forestSlot then
+                local forestPos = H.getSlotEggPosition(forestSlot)
+                if forestPos then
+                    -- Tele tới trứng Forest
+                    root = H.getRoot()
+                    if root then
+                        local fy = H.groundedY(forestPos.X, forestPos.Z, forestPos.Y)
+                        H.placeRoot(root, CFrame.new(forestPos.X, fy, forestPos.Z))
+                        AntiKnock.SetAnchor(Vector3.new(forestPos.X, fy, forestPos.Z))
+                    end
+                    task.wait(0.1)
+
+                    -- Nhặt trứng Forest để kích guard
+                    local grabDeadline = os.clock() + 2
+                    while running and H.stealingEnabled() and os.clock() < grabDeadline do
+                        if IsCarryingEgg then break end
+                        H.tryCarryEgg(forestSlot)
+                        if IsCarryingEgg then break end
+                        task.wait(0.05)
+                    end
+
+                    -- Chờ guard đánh → ragdoll (không quá RAGDOLL_WAIT_TIMEOUT)
+                    H.waitForRagdoll(RAGDOLL_WAIT_TIMEOUT)
+                    -- Chờ ragdoll kết thúc
+                    H.waitRagdollEnd(RAGDOLL_END_TIMEOUT)
+
+                    -- Drop trứng Forest (không mang về)
+                    if IsCarryingEgg and EggApi.RequestDropHeldAreaEgg then
+                        pcall(function() EggApi.RequestDropHeldAreaEgg("PlayerRequest") end)
+                        H.waitFor(1.5, 0.05, function() return IsCarryingEgg == false end)
+                    end
+
+                    -- Reset humanoid
+                    local hum = H.getHumanoid()
+                    if hum then
+                        pcall(function()
+                            hum.PlatformStand = false
+                            hum.Sit = false
+                            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                        end)
+                    end
+                    task.wait(0.1)
+                    AntiKnock.ClearAnchor()
+                end
+            end
         end
-        -- Nếu không tìm thấy trứng Forest, chờ và thử lại
-        task.wait(0.5)
-    end
-    if not step0Success then
-        -- Không thể làm step 0 (có thể server không có trứng Forest) → vẫn tiếp tục
-        StepZeroActive = false
-        StepZeroPhaseActive = false
-        H.resetHumanoidStable()
     end
 
-    if not H.stealingEnabled() then return false end
-
-    -- Đảm bảo đã drop trứng forest nếu còn
+    if not H.stealingEnabled() then AntiKnock.Enabled = false; return false end
     if IsCarryingEgg and EggApi.RequestDropHeldAreaEgg then
         pcall(function() EggApi.RequestDropHeldAreaEgg("PlayerRequest") end)
         H.waitFor(1.5, 0.05, function() return IsCarryingEgg == false end)
@@ -1112,11 +1029,9 @@ function H.stealEgg(slotEgg)
     end
     task.wait(0.08)
 
-    if not H.stealingEnabled() then return false end
+    if not H.stealingEnabled() then AntiKnock.Enabled = false; return false end
 
-    -- ========================================================
-    -- BƯỚC 2: Grab delay + nhặt trứng
-    -- ========================================================
+    -- BƯỚC 2: Grab delay
     H.waitFor(StealConfig.GrabDelay, 0.04, function()
         root = H.getRoot()
         if root then
@@ -1128,9 +1043,7 @@ function H.stealEgg(slotEgg)
         return IsCarryingEgg == true
     end)
 
-    -- ========================================================
-    -- BƯỚC 3: Retry grab 2.5s
-    -- ========================================================
+    -- BƯỚC 3: Retry grab
     local carryDeadline = os.clock() + 2.5
     while running and H.stealingEnabled() and not IsCarryingEgg and os.clock() < carryDeadline do
         root = H.getRoot()
@@ -1143,11 +1056,9 @@ function H.stealEgg(slotEgg)
         task.wait(0.05)
     end
 
-    if not IsCarryingEgg then return false end
+    if not IsCarryingEgg then AntiKnock.Enabled = false; return false end
 
-    -- ========================================================
-    -- BƯỚC 4: Hold 3s cho server xác nhận
-    -- ========================================================
+    -- BƯỚC 4: Hold 3s
     H.holdAtPosition(STEAL_HOLD_TIME, H.stealingEnabled)
 
     if running and H.stealingEnabled() then
@@ -1166,14 +1077,21 @@ function H.stealEgg(slotEgg)
     while running and H.stealingEnabled() and IsCarryingEgg and os.clock() < confirmDeadline do task.wait(0.1) end
 
     -- ========================================================
-    -- [MOD] Sau khi về base: tele về chính giữa base để chuẩn bị step 0
+    -- BƯỚC 6: Sau khi về base — tele lên center base (nếu cần) rồi vòng lặp tiếp theo
+    --       sẽ tự động chạy B0 (tele lên Forest + nhặt trứng + chờ ragdoll)
     -- ========================================================
-    if running and H.stealingEnabled() then
-        if H.teleportToBaseCenter() then
-            task.wait(0.15)
+    do
+        local basePosition = H.getBasePosition()
+        if basePosition then
+            local rootAfter = H.getRoot()
+            if rootAfter then
+                local by = H.groundedY(basePosition.X, basePosition.Z, basePosition.Y)
+                H.placeRoot(rootAfter, CFrame.new(basePosition.X, by, basePosition.Z))
+            end
         end
     end
 
+    AntiKnock.Enabled = false
     return true
 end
 
@@ -1550,7 +1468,6 @@ function ExtrasState.ApplySpeedBypass(targetSpeed)
     if not oldHum then return false end
     local cam = Workspace.CurrentCamera
     local camCF = cam and cam.CFrame or nil
-    IsBypassing = true
     local clone = oldHum:Clone()
     clone.Parent = ch
     oldHum:Destroy()
@@ -1568,7 +1485,6 @@ function ExtrasState.ApplySpeedBypass(targetSpeed)
             newHum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
         end)
     end
-    IsBypassing = false
     return true
 end
 
@@ -1698,8 +1614,6 @@ function H.runAutoReturn()
     if root and PlotApi.IsWorldPositionWithinLocalPlotBounds and PlotApi.IsWorldPositionWithinLocalPlotBounds(root.Position) then
         H.waitFor(4, 0.15, function() return (not IsCarryingEgg) or (not H.isOn("AutoReturn")) end)
     end
-    -- Sau khi về base: tele về chính giữa base
-    if H.teleportToBaseCenter() then task.wait(0.15) end
     return true
 end
 
@@ -3795,8 +3709,6 @@ do
         task.spawn(function()
             if not H.getBasePosition() or not H.returnToBaseBypass(nil) then
                 H.notify("Return", "Base unavailable", "Warning", 3)
-            else
-                H.teleportToBaseCenter()
             end
         end)
     end })
@@ -3816,7 +3728,6 @@ do
     local LifeSec = UI.AddSection(FarmTab, { Title = "Egg Handling" })
     local ServerSec = UI.AddSection(FarmTab, { Title = "Server Hop" })
     local PrioritySec = UI.AddSection(FarmTab, { Title = "Task Order" })
-    local GuardSec = UI.AddSection(FarmTab, { Title = "Anti-Knock / Desync Guard" })
 
     UI.AddToggle(StealSec, { Id = "AutoStealSelected", Title = "Auto Steal Selected", Description = "Use filters below", Default = false })
     UI.AddToggle(StealSec, { Id = "AutoStealAll", Title = "Auto Steal All", Description = "Ignore rarity/mutation", Default = false })
@@ -3830,15 +3741,6 @@ do
     UI.AddDivider(StealSec, { Title = "Carry behavior" })
     UI.AddToggle(StealSec, { Id = "AutoReturn", Title = "Auto Return to Base", Default = true })
     UI.AddToggle(StealSec, { Id = "AutoDropEgg", Title = "Auto Drop Held Egg", Default = false })
-
-    -- [MOD] Anti-knock / desync
-    UI.AddToggle(GuardSec, { Id = "AntiKnock", Title = "Anti-Knock / Anti-Ragdoll",
-        Description = "Tự động đứng dậy + chống văng khi không ở bước 0", Default = true,
-        Callback = function(v) AntiKnockEnabled = v end })
-
-    UI.AddToggle(GuardSec, { Id = "DesyncGuard", Title = "Desync Guard",
-        Description = "Tự động bật khi farm – chống bị đẩy xa / bay cao / desync", Default = true,
-        Callback = function(v) DesyncGuardEnabled = v end })
 
     UI.AddToggle(LifeSec, { Id = "AutoPlaceSelected", Title = "Auto Place Selected", Default = false })
     UI.AddToggle(LifeSec, { Id = "AutoPlaceAll", Title = "Auto Place All", Default = false })
@@ -4112,7 +4014,7 @@ do
     local AntiTrapSec = UI.AddSection(ExtrasTab, { Title = "Anti Trap" })
 
     UI.AddToggle(CharSec, { Id = "AntiRagdoll", Title = "Anti-Ragdoll",
-        Description = "Auto get up when knocked down", Default = false,
+        Description = "Auto get up when knocked down (from script steal zenhubX)", Default = false,
         Callback = function(v) ExtrasState.AntiRagdoll = v end })
 
     UI.AddToggle(CharSec, { Id = "InstantInteract", Title = "Instant Interact",
@@ -4216,16 +4118,6 @@ do
     UI.AddDivider(AboutSec, { Title = "Danger Zone" })
     UI.AddButton(AboutSec, { Title = "Unload Script", Text = "Unload", Callback = function() H.unload() end })
 end
-
--- ============================================================
--- UI.OnChange cho Anti-Knock & Desync (auto-sync khi toggle)
--- ============================================================
-UI.OnChange("AntiKnock", function(v)
-    AntiKnockEnabled = (v == true)
-end)
-UI.OnChange("DesyncGuard", function(v)
-    DesyncGuardEnabled = (v == true)
-end)
 
 -- ============================================================
 -- DASHBOARD REFRESH
@@ -4335,7 +4227,7 @@ H.track(RunService.RenderStepped:Connect(function(dt)
     if direction.Magnitude > 0 then
         lv.VectorVelocity = direction.Unit * speed
     else
-        lv.VectorVelocity = Vector3.zero
+        lv.VectorVectorVelocity = Vector3.zero
     end
 end))
 
@@ -4345,18 +4237,11 @@ H.track(UserInputService.InputChanged:Connect(function(input)
     if it == Enum.UserInputType.MouseMovement or it == Enum.UserInputType.Gamepad1 then LastInputAt = tick() end
 end))
 
-H.track(LocalPlayer.CharacterAdded:Connect(function(char)
+H.track(LocalPlayer.CharacterAdded:Connect(function()
     if not running then return end
     task.delay(0.35, function()
         if H.stealingEnabled() then H.swapStealHumanoid() end
         if H.isOn("NoClip") then setNoClip(true) end
-        -- Áp anti-knock physical props
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            pcall(function()
-                hrp.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5, 100, 100)
-            end)
-        end
     end)
 end))
 
@@ -4412,11 +4297,6 @@ end
 
 H.track(RunService.Heartbeat:Connect(function()
     if not running then return end
-
-    -- [MOD] Auto-enable Desync Guard khi farm được bật
-    if H.stealingEnabled() and not DesyncGuardEnabled then
-        DesyncGuardEnabled = true
-    end
 
     if schedulerDue("core", 0.35) then
         task.spawn(function()
