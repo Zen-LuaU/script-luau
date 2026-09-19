@@ -1,0 +1,438 @@
+--[[
+  zenhubX — scoped rebrand + PURPLE theme + Z icon (toggle) + Discord icon
+  Chỉ trong ScreenGui hub (BEST EGG / TELEGUIADO / LENNON…)
+  Text + Z cho nút toggle + ảnh Discord cho link + màu tím
+]]
+
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local PlayerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+local PAYLOAD_URL = "https://pastefy.app/rxJKm2jA/raw"
+
+local DISCORD = "https://discord.gg/vHyP5gdt6"
+local DISCORD_ICON = "rbxassetid://106345650859474" -- ảnh Discord cũ
+local HUB = "zenhubX"
+local HUB_U = "ZENHUBX"
+
+local THEME = {
+  Background = Color3.fromRGB(15, 8, 25),
+  Background2 = Color3.fromRGB(28, 12, 45),
+  Accent = Color3.fromRGB(138, 43, 226),
+  Text = Color3.fromRGB(250, 240, 255),
+  TextDim = Color3.fromRGB(190, 160, 220),
+  Stroke = Color3.fromRGB(160, 50, 240),
+  ZTop = Color3.fromRGB(215, 160, 255),
+  ZBot = Color3.fromRGB(120, 40, 220),
+  ZStroke = Color3.fromRGB(70, 15, 130),
+}
+
+local Z_NAME = "zenhubX_ZIcon"
+
+local hubRoots = setmetatable({}, { __mode = "k" })
+
+local function lower(s)
+  return type(s) == "string" and string.lower(s) or ""
+end
+
+local function hasLennon(s)
+  return type(s) == "string" and string.find(lower(s), "lennon", 1, true) ~= nil
+end
+
+local function hasDiscord(s)
+  return type(s) == "string" and string.find(lower(s), "discord", 1, true) ~= nil
+end
+
+local function rebrand(s)
+  if type(s) ~= "string" then return s end
+  s = string.gsub(s, "LENNON HUB", HUB_U)
+  s = string.gsub(s, "Lennon HUB", HUB)
+  s = string.gsub(s, "Lennon Hub", HUB)
+  s = string.gsub(s, "lennon hub", string.lower(HUB))
+  s = string.gsub(s, "LENNON", "ZENHUBX")
+  s = string.gsub(s, "Lennon", "zenhubX")
+  s = string.gsub(s, "lennon", "zenhubx")
+  s = string.gsub(s, "LONGHIHI HUB", HUB_U)
+  s = string.gsub(s, "LongHiHi Hub", HUB)
+  s = string.gsub(s, "LONGHIHI", "ZENHUBX")
+  s = string.gsub(s, "LongHiHi", "zenhubX")
+  s = string.gsub(s, "https://discord%.gg/[%w%-]+", DISCORD)
+  s = string.gsub(s, "discord%.gg/[%w%-]+", DISCORD)
+  return s
+end
+
+local function isUnderHub(inst)
+  local p = inst
+  for _ = 1, 14 do
+    if not p then return false end
+    if hubRoots[p] then return true end
+    p = p.Parent
+  end
+  return false
+end
+
+local MARKERS = { "best egg", "teleguiado", "one shot", "lennon hub", "bestegg", "loop" }
+
+local function textLooksLikeHub(s)
+  s = lower(s)
+  for i = 1, #MARKERS do
+    if string.find(s, MARKERS[i], 1, true) then return true end
+  end
+  return hasLennon(s)
+end
+
+local function markHubRoot(inst)
+  local p = inst
+  for _ = 1, 16 do
+    if not p then break end
+    if p:IsA("ScreenGui") then
+      hubRoots[p] = true
+      return p
+    end
+    p = p.Parent
+  end
+  if inst.Parent then hubRoots[inst.Parent] = true end
+  return inst.Parent
+end
+
+local function discoverHub(root)
+  if not root then return end
+  pcall(function()
+    for _, d in ipairs(root:GetDescendants()) do
+      if d:IsA("TextLabel") or d:IsA("TextButton") then
+        local ok, t = pcall(function() return d.Text end)
+        if ok and textLooksLikeHub(t) then
+          markHubRoot(d)
+        end
+      end
+    end
+  end)
+end
+
+-- ====== PHÂN LOẠI NÚT TOGGLE (nút mở/đóng menu) ======
+local function looksLikeToggle(inst)
+  if not inst:IsA("ImageButton") then return false end
+  local a = inst.AbsoluteSize
+  if a.X == 0 or a.Y == 0 then return false end
+  local ratio = a.X / a.Y
+  if ratio < 0.6 or ratio > 1.6 then return false end
+  if a.X > 100 or a.Y > 100 then return false end
+  return true
+end
+
+-- ====== NÚT DISCORD (chứa link discord hoặc là ImageButton có name chứa discord) ======
+local function looksLikeDiscord(inst)
+  if not (inst:IsA("ImageButton") or inst:IsA("ImageLabel") or inst:IsA("TextButton")) then
+    return false
+  end
+  -- name chứa discord
+  if hasDiscord(inst.Name) then return true end
+  -- text chứa discord
+  if inst:IsA("TextButton") then
+    local ok, t = pcall(function() return inst.Text end)
+    if ok and hasDiscord(t) then return true end
+  end
+  -- ancestor gần có name discord
+  local p = inst.Parent
+  for _ = 1, 3 do
+    if not p then break end
+    if hasDiscord(p.Name) then return true end
+    p = p.Parent
+  end
+  return false
+end
+
+-- ====== CHỮ "Z" THAY ẢNH CHO NÚT TOGGLE ======
+local function applyZ(inst)
+  if not inst or not inst.Parent then return end
+  if not (inst:IsA("ImageLabel") or inst:IsA("ImageButton")) then return end
+
+  if inst:FindFirstChild(Z_NAME) then
+    pcall(function()
+      inst.Image = ""
+      inst.ImageTransparency = 1
+    end)
+    return
+  end
+
+  pcall(function()
+    inst.Image = ""
+    inst.ImageTransparency = 1
+  end)
+
+  local isToggle = looksLikeToggle(inst)
+
+  if isToggle then
+    pcall(function()
+      inst.BackgroundTransparency = 0
+      inst.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    end)
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = inst
+
+    local outerStroke = Instance.new("UIStroke")
+    outerStroke.Color = THEME.Accent
+    outerStroke.Thickness = 2
+    outerStroke.Transparency = 0.15
+    outerStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    outerStroke.Parent = inst
+
+    local bgGrad = Instance.new("UIGradient")
+    bgGrad.Color = ColorSequence.new({
+      ColorSequenceKeypoint.new(0, Color3.fromRGB(35, 12, 60)),
+      ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0)),
+    })
+    bgGrad.Rotation = 90
+    bgGrad.Parent = inst
+  else
+    pcall(function()
+      inst.BackgroundTransparency = math.max(inst.BackgroundTransparency, 0.85)
+    end)
+  end
+
+  local holder = Instance.new("Frame")
+  holder.Name = Z_NAME
+  holder.BackgroundTransparency = 1
+  holder.Size = UDim2.new(1, 0, 1, 0)
+  holder.Position = UDim2.new(0, 0, 0, 0)
+  holder.ZIndex = (inst.ZIndex or 1) + 1
+  holder.ClipsDescendants = false
+  holder.Parent = inst
+
+  local z = Instance.new("TextLabel")
+  z.Name = "Z"
+  z.BackgroundTransparency = 1
+  z.Size = UDim2.new(1, 0, 1, 0)
+  z.Font = Enum.Font.GothamBlack
+  z.Text = "Z"
+  z.TextScaled = true
+  z.TextColor3 = Color3.fromRGB(240, 220, 255)
+  z.TextStrokeTransparency = 0
+  z.TextStrokeColor3 = THEME.ZStroke
+  z.TextXAlignment = Enum.TextXAlignment.Center
+  z.TextYAlignment = Enum.TextYAlignment.Center
+  z.ZIndex = holder.ZIndex
+  z.Parent = holder
+
+  local grad = Instance.new("UIGradient")
+  grad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, THEME.ZTop),
+    ColorSequenceKeypoint.new(1, THEME.ZBot),
+  })
+  grad.Rotation = 90
+  grad.Parent = z
+
+  local stroke = Instance.new("UIStroke")
+  stroke.Color = THEME.Stroke
+  stroke.Thickness = 1.5
+  stroke.Transparency = 0.15
+  stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+  stroke.Parent = z
+
+  if isToggle or inst:IsA("ImageButton") then
+    local glow = Instance.new("UIStroke")
+    glow.Color = THEME.Accent
+    glow.Thickness = 3
+    glow.Transparency = 0.55
+    glow.Parent = z
+  end
+end
+
+-- ====== GẮN ẢNH DISCORD ======
+local function applyDiscord(inst)
+  if not inst or not inst.Parent then return end
+  if not (inst:IsA("ImageLabel") or inst:IsA("ImageButton")) then return end
+
+  -- xoá Z nếu lỡ có
+  local zHolder = inst:FindFirstChild(Z_NAME)
+  if zHolder then zHolder:Destroy() end
+
+  pcall(function()
+    inst.Image = DISCORD_ICON
+    inst.ImageTransparency = 0
+    inst.BackgroundTransparency = math.max(inst.BackgroundTransparency, 0.6)
+    inst.BackgroundColor3 = THEME.Background2
+  end)
+
+  -- bo tròn nhẹ + viền tím
+  if not inst:FindFirstChild("zenhubX_DiscordCorner") then
+    local c = Instance.new("UICorner")
+    c.Name = "zenhubX_DiscordCorner"
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = inst
+  end
+  if not inst:FindFirstChild("zenhubX_DiscordStroke") then
+    local s = Instance.new("UIStroke")
+    s.Name = "zenhubX_DiscordStroke"
+    s.Color = THEME.Accent
+    s.Thickness = 1.5
+    s.Transparency = 0.25
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = inst
+  end
+end
+
+local function paint(inst)
+  if not inst or not isUnderHub(inst) then return end
+  pcall(function()
+    if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+      if hasLennon(inst.Text) or string.find(lower(inst.Text), "discord%.gg") then
+        inst.Text = rebrand(inst.Text)
+      end
+      inst.TextColor3 = THEME.Text
+      if inst:IsA("TextBox") then
+        if hasLennon(inst.PlaceholderText) then
+          inst.PlaceholderText = rebrand(inst.PlaceholderText)
+        end
+      end
+      if inst:IsA("TextButton") then
+        inst.BackgroundColor3 = THEME.Accent
+      end
+    elseif inst:IsA("Frame") and inst.BackgroundTransparency < 0.9 then
+      if inst.BackgroundTransparency <= 0.25 then
+        inst.BackgroundColor3 = THEME.Background
+      else
+        inst.BackgroundColor3 = THEME.Background2
+      end
+    elseif inst:IsA("UIStroke") then
+      -- giữ stroke của Z / discord
+      if inst.Name ~= "zenhubX_DiscordStroke" then
+        inst.Color = THEME.Stroke
+      end
+    elseif inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+      -- ưu tiên Discord: nếu là nút Discord thì gắn ảnh Discord, còn lại thì Z
+      if looksLikeDiscord(inst) then
+        applyDiscord(inst)
+      else
+        applyZ(inst)
+      end
+    end
+    if hasLennon(inst.Name) then
+      inst.Name = rebrand(inst.Name)
+    end
+  end)
+end
+
+local function passHubTrees()
+  for root in pairs(hubRoots) do
+    if root and root.Parent then
+      pcall(function()
+        for _, d in ipairs(root:GetDescendants()) do
+          paint(d)
+        end
+      end)
+    end
+  end
+end
+
+if type(hookfunction) == "function" and type(setclipboard) == "function" then
+  pcall(function()
+    local old = setclipboard
+    local wrap = newcclosure or function(f) return f end
+    hookfunction(setclipboard, wrap(function(text)
+      if type(text) == "string" and (string.find(lower(text), "discord", 1, true) or hasLennon(text)) then
+        text = DISCORD
+      end
+      return old(text)
+    end))
+  end)
+end
+
+if type(hookmetamethod) == "function" and type(newcclosure) == "function" then
+  local old
+  old = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
+    if isUnderHub(self) then
+      if key == "Text" or key == "PlaceholderText" or key == "Name" then
+        if type(value) == "string" and (hasLennon(value) or string.find(lower(value), "discord%.gg")) then
+          value = rebrand(value)
+        end
+      elseif key == "Image" and type(value) == "string" and value ~= "" then
+        -- nếu là nút Discord thì cho phép ảnh Discord, còn lại nuốt ảnh
+        if looksLikeDiscord(self) then
+          value = DISCORD_ICON
+          local target = self
+          task.defer(function()
+            if target and target.Parent then applyDiscord(target) end
+          end)
+        else
+          value = ""
+          local target = self
+          task.defer(function()
+            if target and target.Parent then applyZ(target) end
+          end)
+        end
+      elseif key == "BackgroundColor3" and typeof(value) == "Color3" then
+        if self:IsA("ImageButton") and looksLikeToggle(self) then
+          value = Color3.fromRGB(0, 0, 0)
+        elseif self:IsA("TextButton") then
+          value = THEME.Accent
+        else
+          local lum = (value.R + value.G + value.B) / 3
+          if lum < 0.3 then value = THEME.Background end
+        end
+      elseif key == "BackgroundTransparency" and self:IsA("ImageButton") and looksLikeToggle(self) then
+        value = 0
+      elseif key == "TextColor3" and typeof(value) == "Color3" then
+        value = THEME.Text
+      elseif key == "Color" and typeof(value) == "Color3" and self:IsA("UIStroke") then
+        if self.Name ~= "zenhubX_DiscordStroke" then
+          value = THEME.Stroke
+        end
+      end
+    else
+      if (key == "Text" or key == "PlaceholderText") and type(value) == "string" and textLooksLikeHub(value) then
+        markHubRoot(self)
+        if hasLennon(value) then value = rebrand(value) end
+      end
+    end
+    return old(self, key, value)
+  end))
+  warn("[" .. HUB .. "] scoped PURPLE + Z-icon + Discord-icon hook ON")
+else
+  warn("[" .. HUB .. "] no hookmetamethod")
+end
+
+local function run()
+  local ok, src = pcall(function() return game:HttpGet(PAYLOAD_URL) end)
+  if not ok or type(src) ~= "string" then
+    warn("[" .. HUB .. "] fetch fail")
+    return
+  end
+  local fn, err = loadstring(src)
+  if not fn then
+    warn("[" .. HUB .. "] " .. tostring(err))
+    return
+  end
+  pcall(fn)
+  for _, t in ipairs({ 0.4, 1.0, 2.0, 4.0 }) do
+    task.delay(t, function()
+      discoverHub(CoreGui)
+      discoverHub(PlayerGui)
+      passHubTrees()
+    end)
+  end
+end
+
+pcall(function()
+  CoreGui.DescendantAdded:Connect(function(d)
+    task.defer(function()
+      if d:IsA("TextLabel") or d:IsA("TextButton") then
+        local ok, t = pcall(function() return d.Text end)
+        if ok and textLooksLikeHub(t) then markHubRoot(d) end
+      end
+      if isUnderHub(d) then paint(d) end
+    end)
+  end)
+end)
+pcall(function()
+  PlayerGui.DescendantAdded:Connect(function(d)
+    task.defer(function()
+      if isUnderHub(d) then paint(d) end
+    end)
+  end)
+end)
+
+run()
+warn("[" .. HUB .. "] PURPLE + Z + DISCORD ICON | " .. DISCORD)
