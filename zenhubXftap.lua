@@ -270,7 +270,7 @@ local Library = {
     Scheme = {
         BackgroundColor = Color3.fromRGB(15, 15, 15),
         MainColor = Color3.fromRGB(25, 25, 25),
-        AccentColor = Color3.fromRGB(125, 85, 255),
+        AccentColor = Color3.fromRGB(128, 0, 226),
         OutlineColor = Color3.fromRGB(138, 43, 226),
         FontColor = Color3.new(1, 1, 1),
         Font = Font.fromEnum(Enum.Font.Code),
@@ -14936,7 +14936,7 @@ local ThemeManager = {
     BuiltInThemes = {
         ["Default"] = {
             1,
-            { FontColor = "ffffff", MainColor = "191919", AccentColor = "7d55ff", BackgroundColor = "0f0f0f", OutlineColor = "282828", BackgroundImage = "" },
+            { FontColor = "ffffff", MainColor = "191919", AccentColor = "8a00e6", BackgroundColor = "0f0f0f", OutlineColor = "8a2be2", BackgroundImage = "" },
         },
         ["BBot"] = {
             2,
@@ -34983,7 +34983,7 @@ Escape Timer: %*]]
 			Center = true,
 			AutoShow = true,
 			EnableSidebarResize = true,
-			Icon = 128896537819510,
+			Icon = "rbxassetid://128896537819510",
 			IconSize = UDim2.fromOffset(32, 32),
 			CornerRadius = 6,
 			Compact = true,
@@ -35060,7 +35060,7 @@ Escape Timer: %*]]
 			label.Position = UDim2.fromOffset(viewportSize.X * 0.5, viewportSize.Y * 0.8)
 		end
 
-		Watermark = lib:AddDraggableLabel("zenhubX", 128896537819510)
+		Watermark = lib:AddDraggableLabel("zenhubX", "rbxassetid://128896537819510")
 		Watermark:SetVisible(true)
 
 		task.spawn(function()
